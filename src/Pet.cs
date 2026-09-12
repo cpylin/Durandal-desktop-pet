@@ -40,8 +40,15 @@ class Pet
     // （那是 sheet 里每格的**像素**尺寸），除以 sheetScale 才是屏幕上的逻辑尺寸。
     // 下面的 BaseFrame 只在清单缺字段时当兜底默认值用。
     const int BaseFrame = 128;      // 兜底：manifest 里没写 frameWidth/frameHeight 时用
-    const int LabelHeight = 28;     // 底部气泡占的高度（逻辑像素）
-    const int SideMargin = 16;      // 窗口比人物宽出来的量，给气泡留位置
+    // 底部气泡的区域（逻辑像素）。**这两个数直接决定"一句话放不放得下"**，算一下：
+    //   窗口宽 = 帧宽/sheetScale + SideMargin = 288/2 + 28 = 172
+    //   气泡可用宽 = (172 - 8) * scale - 左右 padding(14) ≈ 150px
+    //   字号 11.5 → 一行约 13 个汉字；LabelHeight 42 够放**两行** → 约 26 字
+    // 台词最长的（「是幽兰黛尔，也是卡斯兰娜。」）是 14 字，一行差一点、换成两行绰绰有余。
+    // 2026-09-13 之前是 16 / 28（一行 12 字、**只能放一行**），
+    // 于是 12 字以上全被截成"…" —— 就是用户报的"部分语句显示不完全"。
+    const int LabelHeight = 42;     // 底部气泡占的高度：够放两行
+    const int SideMargin = 28;      // 窗口比人物宽出来的量，给气泡留位置
     const int DefaultPort = 47821;  // UDP 端口，与 PetNotify 保持一致
     // "右下角"是四处的共同落点：启动默认位置、被召唤时挪回来、菜单里的「回到右下角」、
     // 以及启动失败的提示卡片。以前这个 30 是散在 8 行里的字面量，改一处就会不一致。
@@ -305,6 +312,11 @@ class Pet
         labelText = new TextBlock();
         labelText.FontFamily = new FontFamily("Microsoft YaHei UI, Segoe UI");
         labelText.Foreground = new SolidColorBrush(Color.FromRgb(0x22, 0x33, 0x44));
+        // **换行**而不是直接截断：台词超过一行时折到第二行，而不是变成"…"。
+        // TextTrimming 留着当**最后一道保险** —— 配上 ApplyScale 里设的 MaxHeight，
+        // 万一来了长到两行也放不下的文本（比如项目名特别长的"会话开始 · xxx"），
+        // 它会显示省略号，而不是被 Grid 悄悄裁掉半行。
+        labelText.TextWrapping = TextWrapping.Wrap;
         labelText.TextTrimming = TextTrimming.CharacterEllipsis;
         labelText.HorizontalAlignment = HorizontalAlignment.Center;
         labelText.VerticalAlignment = VerticalAlignment.Center;
@@ -398,6 +410,11 @@ class Pet
 
         labelText.FontSize = Math.Max(8.5, 11.5 * scale);
         labelBox.MaxWidth = (winW - 8) * scale;
+        // 文字的**高度**上限也要卡住，否则 TextTrimming 不会生效：TextBlock 会一直长高、
+        // 然后被 Grid 那一行悄悄裁掉半行（看起来就是"字被切了"）。留 6px 给上下 padding。
+        // 注意字号有个 8.5 的下限（缩得太小看不清），所以**窗口缩小以后每行能放的字数会变少** ——
+        // 这就是为什么光靠"加宽"不够，还得允许折行。
+        labelText.MaxHeight = LabelHeight * scale - 6;
 
         ClampToScreen();
     }
@@ -1429,28 +1446,32 @@ class Pet
         catch (Exception) { }
     }
 
+    // 头部位置**是量出来的，不是写死的比例**。
+    // 一开始我用比例估（"取上中部那一块"），结果裁出来只有一撮刘海、连眼睛都没进来 ——
+    // 缩到 32x32 就是一团黄色。原因是我在缩略图上目测的坐标一直偏。
+    // 现在改成：先在上半图里找**虹膜那种饱和蓝**，拿到"两只眼合起来"的包围盒，
+    // 再以它为中心取一个正方形。这个办法不依赖任何写死的数字，重抠一次素材也不会失准。
+    //   实测 akimbo.png(1487x1991)：虹膜 bbox = (306,782)-(709,965)，眼中心 (507,873)
     System.Drawing.Icon MakeTrayIcon()
     {
         try
         {
             string src = Path.Combine(rootDir, "assets", "cut", "akimbo.png");
             if (!File.Exists(src)) return System.Drawing.SystemIcons.Application;
-            using (System.Drawing.Image im = System.Drawing.Image.FromFile(src))
+            using (System.Drawing.Bitmap bm = (System.Drawing.Bitmap)System.Drawing.Image.FromFile(src))
             {
-                // 只取"头"那一块。把整个人缩进 32x32 会糊成一团，什么都看不出来。
-                int side = (int)Math.Min(im.Width * 0.62, im.Height * 0.36);
-                int sx = (im.Width - side) / 2;
-                int sy = (int)(im.Height * 0.03);
-                using (System.Drawing.Bitmap bm = new System.Drawing.Bitmap(32, 32))
+                int sx, sy, side;
+                FindHeadBox(bm, out sx, out sy, out side);
+                using (System.Drawing.Bitmap ic = new System.Drawing.Bitmap(32, 32))
                 {
-                    using (System.Drawing.Graphics g = System.Drawing.Graphics.FromImage(bm))
+                    using (System.Drawing.Graphics g = System.Drawing.Graphics.FromImage(ic))
                     {
                         g.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.HighQualityBicubic;
-                        g.DrawImage(im, new System.Drawing.Rectangle(0, 0, 32, 32),
+                        g.DrawImage(bm, new System.Drawing.Rectangle(0, 0, 32, 32),
                                         new System.Drawing.Rectangle(sx, sy, side, side),
                                         System.Drawing.GraphicsUnit.Pixel);
                     }
-                    IntPtr h = bm.GetHicon();
+                    IntPtr h = ic.GetHicon();
                     try { return (System.Drawing.Icon)System.Drawing.Icon.FromHandle(h).Clone(); }
                     finally { DestroyIcon(h); }   // 不销毁会漏 GDI 句柄
                 }
@@ -1461,6 +1482,53 @@ class Pet
             // 取素材失败也必须有个图标 —— 没图标的话托盘里什么都不显示，用户会以为"隐藏功能坏了"
             return System.Drawing.SystemIcons.Application;
         }
+    }
+
+    // 算出"头部"要裁的那块正方形（越界会被夹回图内）。
+    static void FindHeadBox(System.Drawing.Bitmap bm, out int sx, out int sy, out int side)
+    {
+        int x0 = int.MaxValue, y0 = int.MaxValue, x1 = -1, y1 = -1;
+        int step = Math.Max(1, bm.Width / 250);          // 抽样扫就够定包围盒，不必逐像素
+        for (int y = 0; y < bm.Height / 2; y += step)    // **只看上半**：下半那条蓝裙子也满足"饱和蓝"
+        {
+            for (int x = 0; x < bm.Width; x += step)
+            {
+                System.Drawing.Color c = bm.GetPixel(x, y);
+                if (c.A < 8) continue;
+                if (c.B > 140 && c.B - c.R > 90 && c.B - c.G > 40 && c.G > 60)
+                {
+                    if (x < x0) x0 = x; if (y < y0) y0 = y;
+                    if (x > x1) x1 = x; if (y > y1) y1 = y;
+                }
+            }
+        }
+
+        if (x1 > x0 && (x1 - x0) > bm.Width / 20)        // 找到了虹膜（太小的不算）
+        {
+            double eyeW = x1 - x0 + 1, eyeH = y1 - y0 + 1;
+            double cx = (x0 + x1) / 2.0;
+            // 上移一点：脸比眼睛高，得把额头和头发让进来
+            double cy = (y0 + y1) / 2.0 - eyeH * 0.35;
+            // 两只眼合起来 ≈ 脸宽的 0.57、头高的 0.29 —— 反推边长取大的那个
+            side = (int)Math.Round(Math.Max(eyeW * 1.75, eyeH * 3.4));
+            sx = (int)Math.Round(cx - side / 2.0);
+            sy = (int)Math.Round(cy - side / 2.0);
+        }
+        else
+        {
+            // 兜底：一组按 akimbo 量的固定比例（脸在图的左中上部）。
+            // 走到这里说明素材换得比较离谱 —— 图标不完美，但至少不是空的。
+            side = (int)(bm.Width * 0.48);
+            sx = (int)(bm.Width * 0.10);
+            sy = (int)(bm.Height * 0.226);
+        }
+
+        if (side > bm.Width) side = bm.Width;
+        if (side > bm.Height) side = bm.Height;
+        if (sx < 0) sx = 0;
+        if (sy < 0) sy = 0;
+        if (sx + side > bm.Width) sx = bm.Width - side;
+        if (sy + side > bm.Height) sy = bm.Height - side;
     }
 
     System.Windows.Forms.ContextMenuStrip MakeTrayMenu()
