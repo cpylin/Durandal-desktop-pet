@@ -46,6 +46,12 @@ public class NF {
             if (!IsWindowVisible(h)) return true;
             StringBuilder sb = new StringBuilder(256); GetClassName(h, sb, 256);
             if (!sb.ToString().StartsWith("HwndWrapper")) return true;
+            // 只认桌宠主窗口（物理像素下约 200 宽）。必须按尺寸筛，不能"取第一个可见的" ——
+            // 菜单打开期间点击接收层是可见的且整屏大，会被认成桌宠，点它当然不抢焦点，
+            // 于是这个测试会**假装通过**。这里加了尺寸限制才真正测的是桌宠本体。
+            RECT r; GetWindowRect(h, out r);
+            int w = r.R - r.L;
+            if (w < 100 || w > 400) return true;
             found = h; return false;
         }, IntPtr.Zero);
         return found;

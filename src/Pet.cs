@@ -1282,14 +1282,67 @@ class Pet
         return s;
     }
 
+    // ================= 右键菜单 =================
+    // 这个函数只管**开关菜单和收尾**（那套 Open/Closed + 接收层 + 临时放开 NOACTIVATE 的
+    // 机制是七版才调通的，别动）。菜单内容在下面那组 Mk* 函数里，一项一个。
+    //
+    // 拆开纯粹是因为它原来是 159 行、8 个菜单项的委托全挤在里面，改某一项得先找它在哪。
+    // 注意：下面的拆分是**纯搬位置** —— 逻辑、顺序、连"菜单已经开着时先建再丢掉"这个
+    // 看起来浪费但无害的原有行为，都原样保留。
     void OnRightClick(object sender, MouseButtonEventArgs e)
     {
         e.Handled = true;
 
+        ContextMenu menu = BuildMenu();
+        menu.PlacementTarget = win;
+        menu.Placement = System.Windows.Controls.Primitives.PlacementMode.MousePoint;
+        // 菜单已经开着的时候再按右键 = 收起来（切换），而不是"关掉旧的、在鼠标新位置开一个"。
+        // 后者会闪一下，看起来像"菜单被重启了"。
+        if (openMenu != null && openMenu.IsOpen)
+        {
+            openMenu.IsOpen = false;
+            return;
+        }
+
+        menu.IsOpen = true;
+        openMenu = menu;
+        menu.Closed += delegate(object s2, RoutedEventArgs e2)
+        {
+            if (openMenu == menu) openMenu = null;
+            HideMenuCatcher();
+            MenuClosedRestoreNoActivate();
+        };
+        MenuOpenedAllowActivate();
+
+        // 接收层要等菜单的 popup 真正建出来（才有窗口句柄可排 z 序），所以排到这一轮之后再做。
+        // 顺便也避开了"打开菜单的那一次点击"打到接收层上把自己关掉。
+        win.Dispatcher.BeginInvoke(DispatcherPriority.Background,
+            new Action(delegate() { ShowMenuCatcher(menu); }));
+    }
+
+    // 建出完整菜单。这里的顺序 = 菜单里显示的顺序。
+    ContextMenu BuildMenu()
+    {
         ContextMenu menu = new ContextMenu();
         menu.FontFamily = new FontFamily("Microsoft YaHei UI, Segoe UI");
         menu.FontSize = 12;
 
+        menu.Items.Add(MkScaleMenu());
+        menu.Items.Add(MkOpacityMenu());
+        menu.Items.Add(new Separator());
+        menu.Items.Add(MkResetItem());
+        menu.Items.Add(MkReloadItem());
+        menu.Items.Add(MkTestMenu());
+        menu.Items.Add(new Separator());
+        menu.Items.Add(MkAutostartItem());
+        menu.Items.Add(MkFullscreenItem());
+        menu.Items.Add(new Separator());
+        menu.Items.Add(MkQuitItem());
+        return menu;
+    }
+
+    MenuItem MkScaleMenu()
+    {
         MenuItem mScale = new MenuItem();
         mScale.Header = "大小";
         double[] scales = new double[] { 0.5, 0.75, 1.0, 1.5, 2.0 };
@@ -1304,8 +1357,11 @@ class Pet
             it.Click += delegate(object s2, RoutedEventArgs e2) { ApplyScale(s); SaveConfig(); };
             mScale.Items.Add(it);
         }
-        menu.Items.Add(mScale);
+        return mScale;
+    }
 
+    MenuItem MkOpacityMenu()
+    {
         MenuItem mOpa = new MenuItem();
         mOpa.Header = "透明度";
         double[] opas = new double[] { 1.0, 0.92, 0.75, 0.5, 0.3 };
@@ -1320,10 +1376,11 @@ class Pet
             it.Click += delegate(object s2, RoutedEventArgs e2) { opacity = o; win.Opacity = o; SaveConfig(); };
             mOpa.Items.Add(it);
         }
-        menu.Items.Add(mOpa);
+        return mOpa;
+    }
 
-        menu.Items.Add(new Separator());
-
+    MenuItem MkResetItem()
+    {
         MenuItem mReset = new MenuItem();
         mReset.Header = "回到右下角";
         mReset.Click += delegate(object s2, RoutedEventArgs e2)
@@ -1333,8 +1390,11 @@ class Pet
             win.Top = SystemParameters.WorkArea.Bottom - win.Height - CornerMargin;
             SaveConfig();
         };
-        menu.Items.Add(mReset);
+        return mReset;
+    }
 
+    MenuItem MkReloadItem()
+    {
         MenuItem mReload = new MenuItem();
         mReload.Header = "重新载入素材";
         mReload.Click += delegate(object s2, RoutedEventArgs e2)
@@ -1342,20 +1402,27 @@ class Pet
             try { LoadSprites(); SetState("idle"); ShowLabel("素材已重新载入"); }
             catch (Exception ex) { MessageBox.Show("载入失败：" + ex.Message, "Claude Pet"); }
         };
-        menu.Items.Add(mReload);
+        return mReload;
+    }
 
+    MenuItem MkTestMenu()
+    {
         MenuItem mTest = new MenuItem();
         mTest.Header = "测试各状态";
+        // 顺序跟着 CycleOrder 走（不是按中文名字顺），这样两个入口看到的状态顺序是一致的。
+        // awake 曾经漏在这儿：它在 CycleOrder 和 StateLabel 里都有，所以只能靠单击循环切到，
+        // 没法从这里直接预览 —— 而它是有专属姿势的（clasp 双手握拳）。
         MenuItem[] testItems = new MenuItem[] {
             MkTest("idle (待机)"), MkTest("think (思考)"), MkTest("work (工作)"),
-            MkTest("alert (等你确认)"), MkTest("done (完成)"), MkTest("sleep (睡觉)"),
-            MkTest("error (出错)")
+            MkTest("alert (等你确认)"), MkTest("done (完成)"), MkTest("awake (回来了)"),
+            MkTest("sleep (睡觉)"), MkTest("error (出错)")
         };
         foreach (MenuItem ti in testItems) mTest.Items.Add(ti);
-        menu.Items.Add(mTest);
+        return mTest;
+    }
 
-        menu.Items.Add(new Separator());
-
+    MenuItem MkAutostartItem()
+    {
         MenuItem mAuto = new MenuItem();
         mAuto.Header = "开机自启";
         mAuto.IsCheckable = true;
@@ -1376,8 +1443,11 @@ class Pet
                 ShowLabel("自启设置失败：注册表写不进去");
             }
         };
-        menu.Items.Add(mAuto);
+        return mAuto;
+    }
 
+    MenuItem MkFullscreenItem()
+    {
         MenuItem mFs = new MenuItem();
         mFs.Header = "全屏游戏时自动隐藏";
         mFs.IsCheckable = true;
@@ -1403,10 +1473,11 @@ class Pet
                 ShowLabel("已关闭全屏自动隐藏");
             }
         };
-        menu.Items.Add(mFs);
+        return mFs;
+    }
 
-        menu.Items.Add(new Separator());
-
+    MenuItem MkQuitItem()
+    {
         MenuItem mQuit = new MenuItem();
         mQuit.Header = "退出";
         mQuit.Click += delegate(object s2, RoutedEventArgs e2)
@@ -1414,32 +1485,7 @@ class Pet
             SaveConfig();
             Application.Current.Shutdown();
         };
-        menu.Items.Add(mQuit);
-
-        menu.PlacementTarget = win;
-        menu.Placement = System.Windows.Controls.Primitives.PlacementMode.MousePoint;
-        // 菜单已经开着的时候再按右键 = 收起来（切换），而不是"关掉旧的、在鼠标新位置开一个"。
-        // 后者会闪一下，看起来像"菜单被重启了"。
-        if (openMenu != null && openMenu.IsOpen)
-        {
-            openMenu.IsOpen = false;
-            return;
-        }
-
-        menu.IsOpen = true;
-        openMenu = menu;
-        menu.Closed += delegate(object s2, RoutedEventArgs e2)
-        {
-            if (openMenu == menu) openMenu = null;
-            HideMenuCatcher();
-            MenuClosedRestoreNoActivate();
-        };
-        MenuOpenedAllowActivate();
-
-        // 接收层要等菜单的 popup 真正建出来（才有窗口句柄可排 z 序），所以排到这一轮之后再做。
-        // 顺便也避开了"打开菜单的那一次点击"打到接收层上把自己关掉。
-        win.Dispatcher.BeginInvoke(DispatcherPriority.Background,
-            new Action(delegate() { ShowMenuCatcher(menu); }));
+        return mQuit;
     }
 
 

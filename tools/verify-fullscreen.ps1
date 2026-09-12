@@ -128,9 +128,15 @@ function Get-PetWindowState {
     $all = [Probe]::WindowsOf($script:petPid)
     foreach ($w in $all) {
         $parts = $w.Split('|')
-        if ($parts[0].StartsWith('HwndWrapper')) {
-            return @{ Class = $parts[0]; Visible = ($parts[1] -eq 'True'); Rect = $parts[2]; Raw = $w }
-        }
+        if (-not $parts[0].StartsWith('HwndWrapper')) { continue }
+        # 只认桌宠主窗口：**物理像素**下约 200 宽（160 逻辑 × 125% DPI）。
+        # 不能图省事"取第一个 HwndWrapper" —— 菜单的点击接收层是整屏大的，而且它是
+        # 复用设计（只 Hide 不销毁），只要打开过一次右键菜单它就一直在，
+        # 而 EnumWindows 的顺序不保证。曾经因此把接收层当成桌宠，报出假的 FAIL。
+        $rc = $parts[2].Split(',')
+        $wpx = [int]$rc[2] - [int]$rc[0]
+        if ($wpx -lt 100 -or $wpx -gt 400) { continue }
+        return @{ Class = $parts[0]; Visible = ($parts[1] -eq 'True'); Rect = $parts[2]; Raw = $w }
     }
     return $null
 }
