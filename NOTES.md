@@ -7,12 +7,13 @@
 
 | 文件 | 行数（约） | 干什么 |
 |---|---|---|
-| `src\Pet.cs` | 1649 | 桌宠本体：窗口、状态机、动画、UDP、交互、配置 |
-| `src\Cutout.cs` | 829 | 抠图工具（素材流水线第 1 步） |
-| `src\MakeSprites.cs` | 470 | 占位素材生成器（退路） |
-| `src\SheetGen.cs` | 415 | 生成 sprite sheet + 清单（第 2 步） |
+| `src\Pet.cs` | 1696 | 桌宠本体：窗口、状态机、动画、UDP、交互、配置 |
+| `src\Cutout.cs` | 812 | 抠图工具（素材流水线第 1 步） |
+| `src\MakeSprites.cs` | 461 | 占位素材生成器（退路） |
+| `src\SheetGen.cs` | 403 | 生成 sprite sheet + 清单（第 2 步） |
 | `src\PetNotify.cs` | 188 | hook 转发器（热路径，极简） |
-| `src\Zoom.cs` | 152 | 调试用：裁块放大 |
+| `src\Zoom.cs` | 140 | 调试用：裁块放大 |
+| `src\Common.cs` | 51 | 共用源码（PNG 保存 / 建目录），**被编进**上面 5 个 exe |
 
 （这行数以前写的是 1402，早就不对了 —— 所以标上"约"，别当精确值用。）
 
@@ -403,6 +404,28 @@ WPF 程序集：从 GAC 引用（注意 PresentationCore 在 GAC_64，不在 GAC
 4. 含中文的 `.ps1` 必须存成 **UTF-8 with BOM**，否则 PowerShell 5.1 按 GBK 解析、直接语法报错。
    （而 `.cs` 源文件里的中文字符串**不需要** BOM，csc 读 UTF-8 是正确的 —— 两条规则相反。）
 
+### 5.1 共用代码：共用源码，不是共用 DLL
+
+6 个 exe 是各自独立编译、能单独拷走用的。但要共用代码时，做成 `Common.dll` 就会在
+`bin\` 里多一个**必须跟着走**的文件 —— 破坏"每个工具都能单独拿走"这个优点。
+
+csc 支持一次编译多个源文件，所以折中是 `src\Common.cs`：
+
+```bash
+SHARED="src\\Common.cs"
+"$CSC" $COMMON -target:exe -out:"bin\\Cutout.exe" "src\\Cutout.cs" "$SHARED" "${WPF[@]}"
+```
+
+`Common.cs` 被**编进**每个 exe，外部依赖依然是零。代价是源码改一处要重编译所有 exe
+（本来就要），以及**同一个类的多份副本**（调试时注意别拿错 exe 的堆栈）。
+
+只有 `PetNotify` 不带它：`Common.cs` 用了 WPF 类型，而 `PetNotify` 跑在 hook 热路径上
+刻意不引用 WPF（它也没有任何图片操作）。
+
+合并之前，PNG 保存有 5 份、建目录有 4 份 —— 其中 `Cutout.WritePngSize` 和
+`Zoom.WritePng` 是**逐字相同**的两份。这种重复的危险不在"难看"，而在
+**改一边忘一边**，而症状是"某个工具的输出突然和别人不一样"。
+
 ---
 
 ## 6. 验证方法（这个项目里"怎么知道它是对的"）
@@ -417,8 +440,11 @@ WPF 程序集：从 GAC 引用（注意 PresentationCore 在 GAC_64，不在 GAC
 | 看抠图边缘 | `Zoom.exe` 裁块放大对比 |
 | 模拟鼠标 | 必须用 `mouse_event`/`SendInput` 真注入；`PostMessage` 合成的窗口消息 **WPF 不认**（它按真实鼠标状态判断） |
 | 抓 UDP 载荷 | 临时杀掉桌宠，自己 `UdpClient(47821)` 收一个包看发的是什么 |
+| 验**右键菜单** | `tools\verify-menu.ps1`：真鼠标注入右键打开菜单，再用 UI Automation 把菜单项读出来核对。**子菜单要用 `ExpandCollapsePattern` 显式展开** —— 折叠时里面的项没被实例化，UIA 读不到，靠鼠标悬停会时通时不通 |
 | 验**全屏自动隐藏** | `tools\verify-fullscreen.ps1`：自己造一个**精确铺满显示器**的假全屏窗口，不用真开游戏 |
 | 验**点它不抢焦点** | `tools\verify-nofocus.ps1`：真鼠标注入点一下，比对点击前后的**前台窗口**（不是看返回值） |
+| 验**重构没改行为** | 从 git 取上一版源码编出旧 exe，新旧同输入**比输出字节**。做过一次 13 项全一致（Cutout 3 图×5 输出 / Zoom / SheetGen / MakeSprites / `Pet --shot` 3 状态）。比"编译过了"强得多 |
+| 认准**哪个窗口是桌宠** | 必须按**尺寸**筛（物理像素下约 200 宽）。不能"取第一个 `HwndWrapper`"：菜单的点击接收层是整屏大的、且只 Hide 不销毁，打开过一次菜单它就一直在 —— 会让全屏测试报假 FAIL，让"不抢焦点"测试**假装通过** |
 | 问窗口的"立场" | `SendMessage(WM_MOUSEACTIVATE)` 看返回值 —— ⚠️ **这条路后来被证明是错的**：返回值没错，焦点照样被抢（见 2.1 / README 坑 18 教训②）。改成上面那条"点完看前台窗口变没变" |
 | **编译到底成没成功** | **看 `build.sh` 的退出码**（`./build.sh; echo $?`）。别 grep 它的输出：中文是 GBK，Git Bash 里 grep 会把它当二进制文件、只回一句 `Binary file matches`，**错误行全被吞掉** —— 我就这么拿旧 exe 测了半天 |
 

@@ -43,9 +43,13 @@
 
 **不建议照抄的地方**（这个项目有意的局限，说清楚免得被误导）：
 
-- 6 个 exe 各自独立编译、**互不共享代码** —— 于是 PNG 保存、建目录这类逻辑重复了 4~5 份。这是"零安装 + 每个工具都能单独跑"换来的代价，**不是好设计**。
-- `Pet.cs` 单文件 1649 行，其中右键菜单一个函数 159 行。够用，但不是一个好的分层示范。
-- 没有自动化测试。验证靠 `tools\` 下两个 PowerShell 脚本 + 人工看界面。
+- **6 个 exe 各自独立编译，彼此之间没有共享库**。这本来是"零安装 + 每个工具都能单独拷走"
+  换来的代价，代价是 PNG 保存、建目录这类逻辑一度重复了 4~5 份。
+  现在的折中是 `src\Common.cs`（**共用源码，不是共用 DLL**）：csc 一次编多个源文件，
+  每个 exe 里各有一份副本，外部依赖依然是零。学到的是这个折中，不是"独立编译"本身。
+- `Pet.cs` 单文件仍偏大（右键菜单已拆成一组 `Mk*` 函数，但整个文件还是 1600 行上下）。
+  够用，不是一个好的分层示范。
+- 没有自动化测试。验证靠 `tools\` 下三个 PowerShell 脚本 + 人工看界面。
 
 ---
 
@@ -59,21 +63,26 @@ D:\ClaudePet\
 │   ├── Cutout.cs        抠图：把人物从背景里拿出来（素材流水线第 1 步）
 │   ├── SheetGen.cs      把抠好的图做成带动作的 sprite sheet（第 2 步）
 │   ├── MakeSprites.cs   占位素材生成器（退路：一键回到确定可用的状态）
-│   └── Zoom.cs          调试用：裁一小块放大看边缘（截图截不到分层窗口）
+│   ├── Zoom.cs          调试用：裁一小块放大看边缘（截图截不到分层窗口）
+│   └── Common.cs        共用源码：PNG 保存、建目录。**被编进**上面 5 个 exe
+│                        （PetNotify 除外，它刻意不依赖 WPF）—— 见「不建议照抄」
 ├── assets\
 │   ├── pet.png          精灵图（当前：2304x3072，8 列 x 8 行，单帧 288x384px = 2 倍素材）
 │   ├── pet.json         素材清单：哪个状态用哪一行、几帧、多快、像素密度
 │   └── cut\             抠好的透明 PNG，按**姿势**命名（流水线中间产物；换姿势就在这儿加文件）
+├── youlandaierQban\     原始素材图 —— **Cutout 的输入，别删**（不进 git，另备一份）
 ├── NOTES.md             实现笔记（设计取舍 + 知识点；想了解"为什么这么做"看这个）
-├── bin\                 编译产物（6 个 exe，合计约 92 KB）
+├── bin\                 编译产物（6 个 exe，合计约 92 KB，不进 git）
 ├── hooks\hooks.json     会写入 settings.json 的 hook 配置（参考用）
 ├── build.sh             编译脚本
 ├── install-hooks.ps1    安装 / 卸载 hook
 ├── install-autostart.ps1 开机自启的开关（写注册表 Run 键）
 ├── tools\               验证脚本（见「调试」一节）
+│   ├── verify-menu.ps1        验证右键菜单：真注入右键打开菜单，用 UIA 把菜单项读出来核对
 │   ├── verify-fullscreen.ps1  验证「全屏自动隐藏」：自己造一个铺满屏幕的假全屏窗口
 │   └── verify-nofocus.ps1     验证「点桌宠不抢焦点」（含从全屏回来之后那次）
-└── config.json          运行时生成：位置、大小、透明度、全屏自动隐藏开关
+├── .gitignore/.gitattributes  被忽略的四类大文件都写了理由
+└── config.json          运行时生成：位置、大小、透明度、全屏自动隐藏开关（不进 git）
 ```
 
 ---
@@ -357,19 +366,32 @@ echo '{"hook_event_name":"PreToolUse","tool_name":"Bash"}' | ./bin/PetNotify.exe
   写这类脚本时两个坑：PowerShell 的 delegate 回调里 `Write-Output` 的输出会被丢掉，
   要改用 `[Console]::WriteLine`；`.ps1` 里有中文必须存成 UTF-8 with BOM（见坑 4）。
 
-**两个现成的验证脚本**（在 `tools\`，都需要桌宠正在跑）：
+**三个现成的验证脚本**（在 `tools\`，都需要桌宠正在跑，`exit 0` = 通过）：
 
 ```bash
-# 「全屏自动隐藏」：自己造一个精确铺满显示器的假全屏窗口，不用真开游戏
-powershell -ExecutionPolicy Bypass -File D:\ClaudePet\tools\verify-fullscreen.ps1
+# 右键菜单：真鼠标注入右键打开菜单，再用 UI Automation 把菜单项读出来核对
+powershell -ExecutionPolicy Bypass -File D:/ClaudePet/tools/verify-menu.ps1
 
-# 「点桌宠不抢焦点」：真鼠标注入点它一下，看前台窗口有没有变
-powershell -ExecutionPolicy Bypass -File D:\ClaudePet\tools\verify-nofocus.ps1
+# 全屏自动隐藏：自己造一个精确铺满显示器的假全屏窗口，不用真开游戏
+powershell -ExecutionPolicy Bypass -File D:/ClaudePet/tools/verify-fullscreen.ps1
+
+# 点桌宠不抢焦点：真鼠标注入点它一下，看前台窗口有没有变
+powershell -ExecutionPolicy Bypass -File D:/ClaudePet/tools/verify-nofocus.ps1
 ```
+
+（注意上面用的是**正斜杠**，不是笔误 —— 见坑 22。）
 
 `verify-fullscreen.ps1` 中间会铺一个黑窗口（那就是假的"全屏应用"，故意的）。
 如果你正开着全屏游戏，它会直接 SKIP —— 那种情况下测试窗口**抢不到前台**，
 硬跑会量出一串假 FAIL（这个守卫是实测踩出来的，不是预防性加的）。
+
+三个脚本都要按**窗口尺寸**认桌宠主窗口（物理像素下约 200 宽），不能图省事"取第一个
+`HwndWrapper`"：菜单的点击接收层是整屏大的、而且是复用设计（只 Hide 不销毁），
+打开过一次右键菜单它就一直在。后果分两种，都危险 —— 全屏测试会报**假 FAIL**，
+而"不抢焦点"测试更糟：它点的是接收层，点接收层当然不抢焦点，于是**假装通过**。
+
+`verify-menu.ps1` 里还要显式展开子菜单（`ExpandCollapsePattern`）：WPF 子菜单折叠时
+里面的项没被实例化，UIA 读不到。靠"鼠标恰好悬停"碰运气的话，同一个脚本会时通时不通。
 两个脚本都用 `exit` 码报结果：`0` 通过，非 0 是失败或跳过。
 
 ---
@@ -567,6 +589,29 @@ powershell -ExecutionPolicy Bypass -File D:\ClaudePet\tools\verify-nofocus.ps1
     （因为 `ShowInTaskbar=false`），所以 `CloseMainWindow()` 没用（返回 False，不会走到 `SaveConfig()`）。
     要自己 `EnumWindows` 找到窗口发 `WM_CLOSE`，才会走完
     `app.Run()` 返回 → `SaveConfig()` 这条路。
+
+22. **在 Git Bash 里拼 Windows 路径，别让变量紧跟反斜杠。**
+    `"D:\ClaudePet\tools\$s.ps1"` 不会展开 `$s` —— `\$` 在双引号里是转义，
+    整条路径变成字面的 `D:\ClaudePet\tools$s.ps1`（反斜杠还丢了）。
+
+    **这条在 2026-09-12 一天之内咬了三次**，每次症状不同，所以特别难形成条件反射：
+    * 第一次：`Cutout.exe 源图 "…\cut\$2.png"` → 三个输出**一个都没生成**，
+      工具却照样退出码 0、照样打印"已写出 …"。更糟的是它**往项目里拉了屎** ——
+      整理磁盘时清掉的 10.4MB `assets\cut$2.png*` 就是这次留下的残骸，
+      而当时谁都没发现。
+    * 第二次：`"$O\\$src.cs"` 编译旧 exe 做 A/B → csc 报 `找不到源文件 …\old$src.cs`。
+    * 第三次：上面那条 `verify-*.ps1` 的循环 → 三个脚本全部 `EXIT=127`，
+      报 `-File 参数实际参数 D:\ClaudePet\tools$s.ps1 不存在`。
+
+    → 对策（按推荐程度排）：
+    ① **`cd` 到目录里用相对文件名**，根本不拼路径 —— 最干净，csc 那边尤其适用；
+    ② **一律用正斜杠**：`"D:/ClaudePet/tools/$s.ps1"`。
+       注意 `csc` 是例外（它会把路径中间的 `/` 当选项前缀，`build.sh` 里有记），
+       所以给 csc 传路径就用 ①；
+    ③ 真要用反斜杠，把反斜杠单独放变量里：`BS='\'`，再 `"$dir$BS$name"`。
+
+    另外 Git Bash 会把 `/tmp/x` 自动转成 `C:\Users\...\Temp\x`（MSYS 路径转换），
+    所以传 `/tmp/...` 给 Windows 程序通常是能用的 —— 别看到正斜杠就以为一定错。
 
 ---
 
