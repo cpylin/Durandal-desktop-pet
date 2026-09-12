@@ -221,12 +221,10 @@ class Pet
         RenderTargetBitmap rtb = new RenderTargetBitmap(pw, ph, 96.0 * sc, 96.0 * sc, PixelFormats.Pbgra32);
         rtb.Render(root);
 
-        PngBitmapEncoder enc = new PngBitmapEncoder();
-        enc.Frames.Add(BitmapFrame.Create(rtb));
-        using (FileStream fs = File.Create(outPath))
-        {
-            enc.Save(fs);
-        }
+        // 这里以前是内联的"建编码器 → 加帧 → 写文件"。改用 Common.SavePng 之后
+        // 多了一个副作用：**目标目录不存在时会自动建**（原来会直接抛异常）。
+        // 对 --shot 这种调试用法人手一个目录很正常，建出来比报错好。
+        Common.SavePng(outPath, rtb);
 
         // 关键尺寸写到同名的 .txt —— winexe 没有控制台，只能这样带出诊断信息
         StringBuilder diag = new StringBuilder();

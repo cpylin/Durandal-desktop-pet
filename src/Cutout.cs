@@ -715,7 +715,7 @@ class Cutout
         {
             Console.WriteLine("警告: 抠出来是空的，不裁剪");
             byte[] all = new byte[W * H * 4];
-            WritePng(outPath, all);
+            Common.SavePngBgra(outPath, W, H, all);
             return;
         }
         minX -= 2; minY -= 2; maxX += 2; maxY += 2;
@@ -738,7 +738,7 @@ class Cutout
                 outPx[d * 4 + 3] = alpha[s];
             }
         }
-        WritePngSize(outPath, cw, ch, outPx);
+        Common.SavePngBgra(outPath, cw, ch, outPx);
         Console.WriteLine("裁到 bbox  : (" + minX + "," + minY + ") " + cw + "x" + ch);
     }
 
@@ -757,7 +757,7 @@ class Cutout
             check[i * 4 + 2] = (byte)r;
             check[i * 4 + 3] = 255;
         }
-        WritePng(outPath + ".check.png", check);
+        Common.SavePngBgra(outPath + ".check.png", W, H, check);
 
         // 原图上把"判成背景"的像素涂红：抠漏人物（人物被涂红）一眼可见
         byte[] mk = new byte[W * H * 4];
@@ -775,7 +775,7 @@ class Cutout
             mk[i * 4 + 2] = (byte)r;
             mk[i * 4 + 3] = 255;
         }
-        WritePng(outPath + ".mask.png", mk);
+        Common.SavePngBgra(outPath + ".mask.png", W, H, mk);
 
         byte[] al = new byte[W * H * 4];
         for (int i = 0; i < W * H; i++)
@@ -785,7 +785,7 @@ class Cutout
             al[i * 4 + 2] = alpha[i];
             al[i * 4 + 3] = 255;
         }
-        WritePng(outPath + ".alpha.png", al);
+        Common.SavePngBgra(outPath + ".alpha.png", W, H, al);
 
         diag.AppendLine("bbox       : " + BboxText(alpha));
         File.WriteAllText(outPath + ".txt", diag.ToString(), new UTF8Encoding(false));
@@ -809,21 +809,4 @@ class Cutout
         return "(" + minX + "," + minY + ")-(" + maxX + "," + maxY + ")  " + (maxX - minX + 1) + "x" + (maxY - minY + 1);
     }
 
-    static void WritePng(string path, byte[] bgra)
-    {
-        WritePngSize(path, W, H, bgra);
-    }
-
-    static void WritePngSize(string path, int w, int h, byte[] bgra)
-    {
-        BitmapSource bs = BitmapSource.Create(w, h, 96, 96, PixelFormats.Bgra32, null, bgra, w * 4);
-        PngBitmapEncoder enc = new PngBitmapEncoder();
-        enc.Frames.Add(BitmapFrame.Create(bs));
-        string dir = Path.GetDirectoryName(Path.GetFullPath(path));
-        if (dir.Length > 0 && !Directory.Exists(dir)) Directory.CreateDirectory(dir);
-        using (FileStream fs = File.Create(path))
-        {
-            enc.Save(fs);
-        }
-    }
 }

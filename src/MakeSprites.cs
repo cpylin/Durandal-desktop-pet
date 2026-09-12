@@ -74,16 +74,7 @@ class MakeSprites
         RenderTargetBitmap rtb = new RenderTargetBitmap(w, h, 96, 96, PixelFormats.Pbgra32);
         rtb.Render(dv);
 
-        PngBitmapEncoder enc = new PngBitmapEncoder();
-        enc.Frames.Add(BitmapFrame.Create(rtb));
-
-        string dir = Path.GetDirectoryName(Path.GetFullPath(outPath));
-        if (dir.Length > 0 && !Directory.Exists(dir)) Directory.CreateDirectory(dir);
-
-        using (FileStream fs = File.Create(outPath))
-        {
-            enc.Save(fs);
-        }
+        Common.SavePng(outPath, rtb);
 
         WriteManifest(Path.Combine(Path.GetDirectoryName(Path.GetFullPath(outPath)), "pet.json"));
 

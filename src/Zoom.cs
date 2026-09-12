@@ -71,7 +71,7 @@ class Zoom
             Composite(pxB, w, h, mag, outPx, outW, (w + gap) * mag);
         }
 
-        WritePng(outPath, outW, outH, outPx);
+        Common.SavePngBgra(outPath, outW, outH, outPx);
         Console.WriteLine("已写出 " + Path.GetFullPath(outPath) + "  (" + outW + "x" + outH +
                           ", 裁 (" + x + "," + y + ") " + w + "x" + h + " 放大 " + mag + " 倍)");
     }
@@ -137,16 +137,4 @@ class Zoom
         }
     }
 
-    static void WritePng(string path, int w, int h, byte[] bgra)
-    {
-        BitmapSource bs = BitmapSource.Create(w, h, 96, 96, PixelFormats.Bgra32, null, bgra, w * 4);
-        PngBitmapEncoder enc = new PngBitmapEncoder();
-        enc.Frames.Add(BitmapFrame.Create(bs));
-        string dir = Path.GetDirectoryName(Path.GetFullPath(path));
-        if (dir.Length > 0 && !Directory.Exists(dir)) Directory.CreateDirectory(dir);
-        using (FileStream fs = File.Create(path))
-        {
-            enc.Save(fs);
-        }
-    }
 }

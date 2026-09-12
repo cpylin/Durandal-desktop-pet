@@ -196,13 +196,7 @@ class SheetGen
 
         RenderTargetBitmap rtb = new RenderTargetBitmap(w, h, 96, 96, PixelFormats.Pbgra32);
         rtb.Render(dv);
-        PngBitmapEncoder enc = new PngBitmapEncoder();
-        enc.Frames.Add(BitmapFrame.Create(rtb));
-        EnsureDir(outPath);
-        using (FileStream fs = File.Create(outPath))
-        {
-            enc.Save(fs);
-        }
+        Common.SavePng(outPath, rtb);
         WriteManifest(manifestPath, awakeFrom);
 
         Console.WriteLine("已生成 " + Path.GetFullPath(outPath) + "  (" + w + "x" + h + ", " + Cols + " 列 x " +
@@ -403,13 +397,7 @@ class SheetGen
         }
         sb.Append("  }\n");
         sb.Append("}\n");
-        EnsureDir(path);
+        Common.EnsureDir(path);
         File.WriteAllText(path, sb.ToString(), new UTF8Encoding(false));
-    }
-
-    static void EnsureDir(string path)
-    {
-        string dir = Path.GetDirectoryName(Path.GetFullPath(path));
-        if (dir.Length > 0 && !Directory.Exists(dir)) Directory.CreateDirectory(dir);
     }
 }

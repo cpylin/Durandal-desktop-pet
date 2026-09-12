@@ -81,6 +81,25 @@ Start-Sleep -Milliseconds 700
 
 # 把桌宠进程里所有窗口的可读文字都蒐出来（菜单 popup 属于同一个进程）
 $root = [System.Windows.Automation.AutomationElement]::RootElement
+
+# 子菜单默认是**折叠**的，折叠时里面的项还没被实例化，UIA 一个都读不到。
+# 必须显式展开 —— 靠"鼠标正好停在它上面"碰运气是不行的：同一个脚本实测有时能读到
+# 8 个状态、有时一个都读不到，那种"有时通过"的测试比没有更糟。
+$subCond = New-Object System.Windows.Automation.PropertyCondition(
+    [System.Windows.Automation.AutomationElement]::NameProperty, '测试各状态')
+$sub = $root.FindFirst([System.Windows.Automation.TreeScope]::Descendants, $subCond)
+if ($sub) {
+    try {
+        $ec = $sub.GetCurrentPattern([System.Windows.Automation.ExpandCollapsePattern]::Pattern)
+        $ec.Expand()
+        Start-Sleep -Milliseconds 500
+    } catch {
+        Write-Output ('WARN: 展开「测试各状态」失败: ' + $_.Exception.Message)
+    }
+} else {
+    Write-Output 'WARN: 没找到「测试各状态」这一项'
+}
+
 $cond = New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ProcessIdProperty, $pet.Id)
 $wins = $root.FindAll([System.Windows.Automation.TreeScope]::Children, $cond)
 $names = New-Object System.Collections.ArrayList

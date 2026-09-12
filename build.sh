@@ -39,23 +39,30 @@ WPF=(
 
 COMMON="-nologo -platform:x64 -optimize+ -warn:4"
 
+# 共用源码。csc 支持一次编译多个源文件 —— Common.cs 会被**编进**每个 exe，
+# 所以它们依然各自独立、不需要任何额外的 DLL 就能单独拷走运行。
+#
+# 只有 PetNotify 不带它：Common.cs 用到 WPF 类型，而 PetNotify 跑在 hook 热路径上，
+# 刻意不引用 WPF 来加快启动（它也没有任何图片操作，用不上这里的东西）。
+SHARED="src\\Common.cs"
+
 echo "[1/6] MakeSprites.exe  (占位素材生成器)"
-"$CSC" $COMMON -target:exe -out:"bin\\MakeSprites.exe" "src\\MakeSprites.cs" "${WPF[@]}"
+"$CSC" $COMMON -target:exe -out:"bin\\MakeSprites.exe" "src\\MakeSprites.cs" "$SHARED" "${WPF[@]}"
 
 echo "[2/6] Cutout.exe       (抠图：把人物从背景里拿出来)"
-"$CSC" $COMMON -target:exe -out:"bin\\Cutout.exe" "src\\Cutout.cs" "${WPF[@]}"
+"$CSC" $COMMON -target:exe -out:"bin\\Cutout.exe" "src\\Cutout.cs" "$SHARED" "${WPF[@]}"
 
 echo "[3/6] SheetGen.exe     (把抠好的图做成带动作的 sprite sheet)"
-"$CSC" $COMMON -target:exe -out:"bin\\SheetGen.exe" "src\\SheetGen.cs" "${WPF[@]}"
+"$CSC" $COMMON -target:exe -out:"bin\\SheetGen.exe" "src\\SheetGen.cs" "$SHARED" "${WPF[@]}"
 
 echo "[4/6] Zoom.exe         (调试：裁一小块放大，检查边缘和对齐)"
-"$CSC" $COMMON -target:exe -out:"bin\\Zoom.exe" "src\\Zoom.cs" "${WPF[@]}"
+"$CSC" $COMMON -target:exe -out:"bin\\Zoom.exe" "src\\Zoom.cs" "$SHARED" "${WPF[@]}"
 
-echo "[5/6] PetNotify.exe    (hook 热路径，无 WPF 依赖)"
+echo "[5/6] PetNotify.exe    (hook 热路径，无 WPF 依赖 —— 所以不带 Common.cs)"
 "$CSC" $COMMON -target:exe -out:"bin\\PetNotify.exe" "src\\PetNotify.cs"
 
 echo "[6/6] Pet.exe          (桌宠主程序)"
-"$CSC" $COMMON -target:winexe -out:"bin\\Pet.exe" "src\\Pet.cs" "${WPF[@]}"
+"$CSC" $COMMON -target:winexe -out:"bin\\Pet.exe" "src\\Pet.cs" "$SHARED" "${WPF[@]}"
 
 echo
 echo "编译完成："
