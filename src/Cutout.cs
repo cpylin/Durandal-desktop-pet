@@ -1,29 +1,33 @@
 // Cutout.cs —— 把人物从背景里抠出来（桌宠素材流水线第一步）
 //
 // 用法：
-//   Cutout.exe <源图> <输出.png> [暗色阈值] [修正文件] [堤坝半径]
+//   Cutout.exe <源图> <输出.png> [背景容差] [修正文件]
 //
 // 输出（都写到 <输出.png> 旁边）：
 //   <输出.png>         透明 RGBA 的人物抠图：裁到 bbox、保持原始分辨率（不缩放）
 //   <输出.check.png>   合成到洋红底上的检查图 —— 有没有抠干净一眼可见
 //   <输出.mask.png>    原图 + 红色半透明标出"被判成背景抹掉"的像素 —— 有没有抠漏一眼可见
 //   <输出.alpha.png>   只看 alpha 的灰度图
-//   <输出.txt>         数值诊断（bbox、背景占比、样本色、被丢掉的连通块、封闭孔洞）
+//   <输出.txt>         数值诊断（bbox、背景参考色、边框吻合度、被丢掉的连通块、残留自检）
 //
-// 算法演进（第一版为什么失败，值得记住）：
-//   第一版按"颜色像不像背景"判定，整片失败 —— 她的浅金发和皮肤跟浅色背景色差小到分不开
-//   （脸 (253,240,225) vs 背景 (253,246,230)，只差 5），填充从描边的一个断口钻进去之后，
-//   整个浅色躯干都被当成背景吞掉了。所以主判据必须是**几何**的：
-//   0) 堤坝半径要跟着图的大小走 —— 描边的断口也是按比例放大的：
-//      658px 宽的图 5px 够，1760x2304 的图 5px 会漏（浅色头发整片被吃掉，还不报错），
-//      要 8px 以上。现在按图宽自动定（W/160，最小 5），可用第 5 个参数覆盖。
-//   1) 深色描边 → 膨胀成"堤坝"：描边有几像素断口也封得住，而且完全不依赖颜色，
-//      脸和背景同色也无所谓
-//   2) 从四边在堤坝外漫水，再把背景膨胀回同样的半径 —— 边界正好落在描边外沿
-//   3) 只保留最大连通块（星形描边残余、黄星星、网点、文字都是独立小块）
-//   4) 封闭的缝单独判定：贴着轮廓 + 颜色就是背景色 → 抹掉；
-//      脸/头发/白靴子这两条都不满足 → 保留
-//   5) 收边 1px + 在 mask 上羽化（不在有颜色的图上羽化 —— 边缘就不会带一圈背景色）
+// 算法：**背景色键控** —— 把"就是背景色"的像素全删掉，完事。
+//
+// 素材约定：人物画在**一块纯色背景**上，而且这块颜色和角色差得远。
+// 满足这一条，抠图就是一行的事。
+//
+// 为什么是这么一个简单的算法（绕了一圈才到的，值得记）：
+//   上一版素材的背景是奶油色、和人物皮肤只差 5（脸 (253,240,225) vs 背景 (253,246,230)）。
+//   颜色判据怎么调都是错的 —— 阈值定宽了切人物、定窄了留背景。那时只能改用几何判据：
+//   把深色描边膨胀成"堤坝"封住断口，从四边漫水，堤坝外面才算背景。它确实能把人物抠出来，
+//   但代价是边界切在描边外沿，会把角色**自带的白色贴纸边一起切掉**；而被轮廓围死的背景块
+//   （头发卷中间的洞）漫水进不去，还得再补一刀颜色判据去认它 —— 那一刀很脆：
+//   实测同一块残留在 8 张图里的颜色吻合度能从 15% 跳到 79%，阈值怎么定都会漏或误伤。
+//   2026-09-12 把素材背景重做成纯青色之后，上面所有麻烦一起消失了。
+//   **结论：换素材时挑一块和角色明显不同的纯色背景，比事后补算法划算得多。**
+//
+// 键控顺带白拿的两件事：
+//   · 角色自带的白色描边/贴纸边**完整保留**（它是画稿的一部分，不是背景）；
+//   · 被轮廓围死的背景色也一视同仁地删掉 —— 逐像素判定，压根不问连通性。
 //
 // 自动流程不可能 100% 干净，所以留了修正文件的入口（见 ApplyFixes），
 // 具体留哪几个补丁点由人看着检查图决定，并且记录在文件里、可复现。
@@ -39,32 +43,29 @@ using System.Windows.Media.Imaging;
 class Cutout
 {
     // ---------- 可调参数 ----------
-    // 踩过的坑：第一版用"颜色像不像背景"来判定，结果整片失败 ——
-    // 她的浅金发和皮肤跟浅色背景色差小到分不开（脸 (253,240,225) vs 背景 (253,246,230)，差 5），
-    // 填充一旦从描边的某个断口钻进去，整个浅色躯干就被当成背景吞掉。
-    // 所以主判据必须是**几何**的：深色描边 = 堤坝，从四边漫水，堤坝围不住的地方才是背景。
-    // 颜色只用来区分"封闭的缝"（要抹掉）和"封闭的人物部件"（要保留）。
-    static int Ldark = 150;        // 亮度低于它 = 描边/线条（堤坝原料）
-    static int BarrierR = 5;       // 堤坝膨胀半径：描边有几像素的断口也靠它封住
-    static int HoleMaxDist = 100;  // 粗筛保护"深处的人物部件"：实测真缝最远 58px，她的脸颊块 182px，取中间
-    static int HoleColorTol = 12;  // 均色差 ≤ 它 = 这个封闭块的颜色就是背景色 → 是缝，抹掉
-                                   // 实测分得很开：真缝 3~9，人物部件 14~96
+    static int BgFrame = 20;         // 取背景参考色用的边框宽度 —— 图像最外这一圈铁定是背景
+    static int KeyTol = 30;          // 和背景参考色的最大通道差 ≤ 它 → 这个像素"就是背景色"
+                                     // 实测：背景是纯青色、边框内吻合度 100%；而人物里最接近
+                                     // 背景色的是眼睛的青蓝高光，差 45 —— 取 30 正好卡在中间。
+                                     // 这个值**不能乱放**：放太宽（>45）就会把眼睛高光当成背景挖掉。
+    static int ChromaMinUniform = 80; // 边框内 ≥ 它% 的像素接近背景参考色，才算"背景是纯色"。
+                                      // 低于它 ChromaMatte 只**警告**、不换算法 ——
+                                      // 这个工具就一条路，素材得配纯色背景。
     static int Tol = 30;           // 修正文件里 RegionGrow 的默认容差
-    static int ErodePx = 1;        // 收边：往人物里收 1px，去掉 JPEG 振铃和浅色溢边
+    static int ErodePx = 1;        // 收边：往人物里收 1px，修掉抗锯齿在边缘留下的混色
     static int AlphaThresh = 128;  // 源图自带 alpha 时，认为"这是人物"的阈值
-    static bool BarrierRGiven = false;  // 命令行是否显式指定了堤坝半径
 
     // ---------- 数据 ----------
     static int W, H;
     static byte[] Px;              // Bgra32，直通（非预乘）
-    static int[] DistToBg;         // 每个像素到最近背景像素的 4-邻域距离
 
     static void Main(string[] argv)
     {
         if (argv.Length < 2)
         {
-            Console.WriteLine("用法: Cutout.exe <源图> <输出.png> [暗色阈值] [修正文件] [堤坝半径]");
-            Console.WriteLine("  暗色阈值 默认 150；堤坝半径默认 5（像素越大、描边断口越宽的图要调大）");
+            Console.WriteLine("用法: Cutout.exe <源图> <输出.png> [背景容差] [修正文件]");
+            Console.WriteLine("  背景容差 默认 30：和背景参考色的最大通道差 ≤ 它就算背景色");
+            Console.WriteLine("  素材要画在**一块纯色背景**上、且这个颜色和角色差得远 —— 见文件头注释");
             return;
         }
         // 参数解析也要放进 try 里：以前它在外边，写错一个参数（比如手滑打成字母）
@@ -74,15 +75,9 @@ class Cutout
             string srcPath = argv[0];
             string outPath = argv[1];
             if (argv.Length >= 3 && argv[2].Length > 0)
-                Ldark = ParseInt(argv[2], 1, 255, "暗色阈值");
+                KeyTol = ParseInt(argv[2], 1, 255, "背景容差");
 
             string fixPath = (argv.Length >= 4 && argv[3].Length > 0) ? argv[3] : null;
-
-            if (argv.Length >= 5 && argv[4].Length > 0)
-            {
-                BarrierR = ParseInt(argv[4], 1, 200, "堤坝半径");
-                BarrierRGiven = true;
-            }
 
             Run(srcPath, outPath, fixPath);
         }
@@ -95,7 +90,7 @@ class Cutout
 
     // 命令行参数写错时要明确说"哪个参数、允许什么范围"，
     // 而不是抛一个 FormatException 让人自己去猜哪儿写错了。
-    // 顺带把范围卡住：堤坝半径给 0 或负数会得到一个几乎全背景的空抠图，而且不报错。
+    // 顺带把范围卡住：背景容差给 0 会得到一个"一个像素都删不掉"的空操作，而且不报错。
     static int ParseInt(string s, int min, int max, string what)
     {
         int v;
@@ -110,16 +105,7 @@ class Cutout
     {
         LoadPixels(srcPath);
         Console.WriteLine("源图      : " + srcPath + "  " + W + "x" + H);
-
-        // 堤坝半径必须跟着图的大小走：描边的断口宽度也是按比例放大的。
-        // 实测 658px 宽的图用 5px 够，1760x2304 的图 5px 会漏（浅色头发被整片吃掉，
-        // 背景占比从 58% 涨到 68%），要 8px 以上才封得住 —— 所以按宽度自动定，
-        // 命令行给了就用命令行的。
-        if (!BarrierRGiven)
-        {
-            BarrierR = Math.Max(5, (int)Math.Round(W / 160.0));
-        }
-        Console.WriteLine("堤坝半径  : " + BarrierR + "px" + (BarrierRGiven ? "（命令行指定）" : "（按图宽自动）"));
+        Console.WriteLine("背景容差  : ±" + KeyTol + "（和背景参考色的最大通道差）");
 
         StringBuilder diag = new StringBuilder();
         diag.AppendLine("源图       : " + Path.GetFullPath(srcPath));
@@ -136,8 +122,8 @@ class Cutout
         }
         else
         {
-            diag.AppendLine("路径       : 无 alpha，按深色描边做几何抠图（堤坝半径 " + BarrierR + "px）");
-            mask = AutoMatte(diag);
+            diag.AppendLine("路径       : 无 alpha，按背景色键控抠图（容差 ±" + KeyTol + "）");
+            mask = ChromaMatte(diag);
         }
 
         if (fixPath != null)
@@ -211,130 +197,93 @@ class Cutout
         return m;
     }
 
-    // ================= 自动抠图（几何判据） =================
-    static bool[] AutoMatte(StringBuilder diag)
+    // ================= 抠图：背景色键控 =================
+    // 素材约定：人物画在**一块纯色背景**上（本项目的素材是青色），而且这块颜色和角色差得远。
+    // 于是要做的事只有一句：**把"就是背景色"的像素全删掉**。
+    //
+    // 为什么敢这么简单（这是绕了一圈才到的）：
+    //   上一版素材的背景是奶油色、和人物皮肤只差 5（脸 (253,240,225) vs 背景 (253,246,230)），
+    //   颜色判据怎么调都是错的 —— 阈值定宽了切人物、定窄了留背景。那时只能改用几何判据
+    //   （深色描边膨胀成堤坝 → 从四边漫水），代价是边界切在描边外沿、把角色**自带的白色
+    //   贴纸边一起切掉**，而且被轮廓围死的背景块还得再想办法补一刀。
+    //   2026-09-12 把素材重做成纯青背景之后，上面那些全都不需要了。
+    //   **换素材时挑一块和角色明显不同的纯色背景，比事后补算法划算得多。**
+    //
+    // 顺带白拿的两件事：
+    //   · 角色自带的白色描边/贴纸边**完整保留** —— 它是画稿的一部分，不是背景；
+    //   · 被轮廓围死的背景色（头发卷中间的洞）也一视同仁地被删掉，
+    //     不需要"再抠一次"，因为它压根不问连通性，只问颜色。
+    static bool[] ChromaMatte(StringBuilder diag)
     {
-        // 1) 深色像素 = 描边/线条，这是堤坝的原料
-        bool[] dark = new bool[W * H];
-        int darkCount = 0;
-        for (int i = 0; i < dark.Length; i++)
+        // 1) 背景参考色 = 图像最外 BgFrame 宽那一圈的均色 —— 那里铁定是背景。
+        //    **不要**改用"离某个像素最近的那块背景"：角色自带的白色描边也是"非背景色、
+        //    连着边界"的，会被算成背景，于是青色残留的"最近背景"变成了白色，判据失效。
+        long fR = 0, fG = 0, fB = 0;
+        int fn = 0;
+        for (int y = 0; y < H; y++)
         {
-            int r = Px[i * 4 + 2], g = Px[i * 4 + 1], b = Px[i * 4];
-            int lum = (r * 299 + g * 587 + b * 114) / 1000;
-            if (lum < Ldark)
+            for (int x = 0; x < W; x++)
             {
-                dark[i] = true;
-                darkCount++;
+                if (x >= BgFrame && y >= BgFrame && x < W - BgFrame && y < H - BgFrame) continue;
+                int i = y * W + x;
+                fR += Px[i * 4 + 2]; fG += Px[i * 4 + 1]; fB += Px[i * 4];
+                fn++;
             }
         }
-        diag.AppendLine("暗色线条   : " + darkCount + " px（亮度 < " + Ldark + "）");
+        int bgR = (int)(fR / fn), bgG = (int)(fG / fn), bgB = (int)(fB / fn);
 
-        // 2) 膨胀成堤坝。描边只有几像素的断口的话，靠这一步封住 ——
-        //    这是整个算法里最关键的一步：不依赖颜色，所以脸和背景同色也无所谓。
-        bool[] barrier = Morph(dark, true, BarrierR);
-        int bc = 0;
-        for (int i = 0; i < barrier.Length; i++) if (barrier[i]) bc++;
-        diag.AppendLine("堤坝       : 膨胀 " + BarrierR + "px → " + bc + " px");
+        // 2) 边框里有多少像素真的接近这个色 —— "这张图适不适合这么抠"的体检指标。
+        //    背景不是纯色时它会掉下来。那时输出会很糟，所以**明确警告**，而不是闷头给一张烂图。
+        bool[] isKey = new bool[W * H];
+        for (int i = 0; i < isKey.Length; i++) isKey[i] = ChanDiff(i, bgR, bgG, bgB) <= KeyTol;
+        int frameHit = 0;
+        for (int y = 0; y < H; y++)
+        {
+            for (int x = 0; x < W; x++)
+            {
+                if (x >= BgFrame && y >= BgFrame && x < W - BgFrame && y < H - BgFrame) continue;
+                if (isKey[y * W + x]) frameHit++;
+            }
+        }
+        double uniform = 100.0 * frameHit / fn;
+        diag.AppendLine("背景参考色 : (" + bgR + "," + bgG + "," + bgB + ")  边框内吻合 " +
+                        uniform.ToString("0.0", CultureInfo.InvariantCulture) + "%（容差 ±" + KeyTol + "）");
+        if (uniform < ChromaMinUniform)
+            Console.WriteLine("警告: 背景看起来**不是一块纯色**（边框内只有 " +
+                              uniform.ToString("0.0", CultureInfo.InvariantCulture) +
+                              "% 的像素接近背景色）。键控是给纯色背景设计的，这张的结果可能很差。");
 
-        // 3) 从四边在"非堤坝"上漫水：谁在堤坝外面谁就是背景
-        bool[] bgOuter = FloodFromBorder(barrier);
-
-        // 4) 把背景膨胀回 BarrierR，抵消第 2 步的膨胀，让边界回到描边的外沿。
-        //    副作用正好是我想要的：小的深色斑点/文字笔画（直径 ≤ 2R）会被背景吃掉。
-        bool[] bg = Morph(bgOuter, true, BarrierR);
-
+        // 3) 删掉所有背景色像素 —— 剩下的就是人物，**连同它自带的白色描边**
         bool[] fg = new bool[W * H];
         int bgCount = 0;
         for (int i = 0; i < fg.Length; i++)
         {
-            fg[i] = !bg[i];
-            if (bg[i]) bgCount++;
+            fg[i] = !isKey[i];
+            if (isKey[i]) bgCount++;
         }
         diag.AppendLine("填充结果   : 背景 " + bgCount + " px (" +
                         (100.0 * bgCount / (W * H)).ToString("0.0", CultureInfo.InvariantCulture) + "%)");
 
-        // 轻量闭运算：JPEG 噪点可能把细头发丝断开，断了人物就会碎成几块
-        fg = Morph(fg, true, 1);
-        fg = Morph(fg, false, 1);
-
+        // 4) 只留最大的一块 —— 顺手丢掉角落里那些"不是背景色、但也不是人物"的独立东西。
+        //    实测素材右下角有「豆包AI生成」的水印文字，就是这么没的。
         fg = KeepLargestComponent(fg, diag);
-        // 注意这里传的是 bgOuter（没膨胀的真背景），不是 bg：
-        // bg 里含膨胀出来的那一圈描边暗像素，拿它当参考色会把色差算歪
-        // （实测参考色变成 (204,204,205) 而不是纸张色 (250,246,240)）。
-        fg = RemoveEnclosedBackground(fg, bgOuter, diag);
+
+        // 自检：还剩多少背景色像素。逐像素删的，这个值必然接近 0；留着是万一哪天
+        // 又改成"按块判定"，能立刻看出来。
+        int left = 0;
+        for (int i = 0; i < fg.Length; i++) if (fg[i] && isKey[i]) left++;
+        diag.AppendLine("残留自检   : 人物里还剩 " + left + " px 背景色（理想 0）");
         return fg;
     }
 
-    static bool[] FloodFromBorder(bool[] barrier)
+    // 某个像素和给定 RGB 的最大通道差
+    static int ChanDiff(int i, int r, int g, int b)
     {
-        bool[] bg = new bool[W * H];
-        int[] stack = new int[W * H];
-        int sp = 0;
-        for (int x = 0; x < W; x++)
-        {
-            Seed(x, 0, barrier, bg, stack, ref sp);
-            Seed(x, H - 1, barrier, bg, stack, ref sp);
-        }
-        for (int y = 0; y < H; y++)
-        {
-            Seed(0, y, barrier, bg, stack, ref sp);
-            Seed(W - 1, y, barrier, bg, stack, ref sp);
-        }
-        while (sp > 0)
-        {
-            int p = stack[--sp];
-            int x = p % W;
-            int y = p / W;
-            for (int k = 0; k < 4; k++)     // 4-邻域：斜向连通会从描边的对角缝里漏进去
-            {
-                int nx = x + NX8[k];
-                int ny = y + NY8[k];
-                if (nx < 0 || ny < 0 || nx >= W || ny >= H) continue;
-                int np = ny * W + nx;
-                if (bg[np] || barrier[np]) continue;
-                bg[np] = true;
-                stack[sp++] = np;
-            }
-        }
-        return bg;
-    }
-
-    static void Seed(int x, int y, bool[] barrier, bool[] bg, int[] stack, ref int sp)
-    {
-        int p = y * W + x;
-        if (bg[p] || barrier[p]) return;
-        bg[p] = true;
-        stack[sp++] = p;
-    }
-
-    // ================= 形态学 =================
-    // 用 3x3 结构元迭代 r 次 —— 单次扫"距离 r 的邻居"会在大 r 时留下空隙，
-    // 边界就不准了（边界直接决定抠图的边缘，不能糊）。
-    static bool[] Morph(bool[] src, bool dilate, int r)
-    {
-        bool[] cur = src;
-        for (int i = 0; i < r; i++)
-        {
-            bool[] next = new bool[cur.Length];
-            for (int y = 0; y < H; y++)
-            {
-                for (int x = 0; x < W; x++)
-                {
-                    bool hit = cur[Idx(x, y)];
-                    bool flip = false;
-                    for (int k = 0; k < 8 && !flip; k++)
-                    {
-                        int nx = x + NX8[k];
-                        int ny = y + NY8[k];
-                        if (nx < 0 || ny < 0 || nx >= W || ny >= H) continue;
-                        if (cur[ny * W + nx] != hit) flip = true;
-                    }
-                    next[Idx(x, y)] = dilate ? (hit || flip) : (hit && !flip);
-                }
-            }
-            cur = next;
-        }
-        return cur;
+        int d1 = Math.Abs(Px[i * 4 + 2] - r), d2 = Math.Abs(Px[i * 4 + 1] - g), d3 = Math.Abs(Px[i * 4] - b);
+        int m = d1;
+        if (d2 > m) m = d2;
+        if (d3 > m) m = d3;
+        return m;
     }
 
     // ================= 连通块 =================
@@ -420,126 +369,6 @@ class Cutout
                             box[i][2] + "," + box[i][3] + ")");
         }
         return kept;
-    }
-
-    // ================= 封闭的缝 =================
-    // 胳膊、腿、头发卷之间的缝：堤坝把它们围住了，所以填充够不到，会留在人物里。
-    // 但人物的脸/头发/白靴子同样"被围住"，怎么区分？
-    //   1) 缝就贴着轮廓：整块离真正的背景都很近（隔着一条描边而已）
-    //   2) 缝的颜色就是背景色（同样的条纹）—— 而她的皮肤虽然和背景同色，
-    //      却离轮廓很远；头皮/头发虽然贴着轮廓，颜色却和背景差得远
-    // 两个条件同时满足才抹掉。先看数据再定阈值（诊断里把每块都列出来）。
-    static bool[] RemoveEnclosedBackground(bool[] fg, bool[] bg, StringBuilder diag)
-    {
-        // 到最近背景像素的距离，以及那个背景像素的颜色
-        DistToBg = new int[W * H];
-        int[] nearest = new int[W * H];
-        int[] queue = new int[W * H];
-        int head = 0, tail = 0;
-        for (int i = 0; i < DistToBg.Length; i++)
-        {
-            DistToBg[i] = int.MaxValue;
-            if (bg[i])
-            {
-                DistToBg[i] = 0;
-                nearest[i] = (Px[i * 4 + 2] << 16) | (Px[i * 4 + 1] << 8) | Px[i * 4];
-                queue[tail++] = i;
-            }
-        }
-        while (head < tail)
-        {
-            int p = queue[head++];
-            int x = p % W;
-            int y = p / W;
-            for (int k = 0; k < 4; k++)
-            {
-                int nx = x + NX8[k];
-                int ny = y + NY8[k];
-                if (nx < 0 || ny < 0 || nx >= W || ny >= H) continue;
-                int np = ny * W + nx;
-                if (DistToBg[np] > DistToBg[p] + 1)
-                {
-                    DistToBg[np] = DistToBg[p] + 1;
-                    nearest[np] = nearest[p];
-                    queue[tail++] = np;
-                }
-            }
-        }
-
-        // 候选 = 人物里"非深色"的连通块（深色的是描边和线条，不是缝）
-        bool[] cand = new bool[W * H];
-        for (int i = 0; i < cand.Length; i++)
-        {
-            if (!fg[i]) continue;
-            int r = Px[i * 4 + 2], g = Px[i * 4 + 1], b = Px[i * 4];
-            int lum = (r * 299 + g * 587 + b * 114) / 1000;
-            cand[i] = lum >= Ldark;
-        }
-
-        int[] label;
-        List<int> area = new List<int>();
-        List<int[]> box = new List<int[]>();
-        label = Label(cand, area, box);
-
-        int removed = 0, removedPx = 0, keptRegions = 0;
-        for (int i = 0; i < area.Count; i++)
-        {
-            if (area[i] < 12) continue;      // 太小的噪声不管
-            int maxDist = 0;
-            long sumR = 0, sumG = 0, sumB = 0;
-            long bgR = 0, bgG = 0, bgB = 0;
-            int cnt = 0;
-            for (int p = 0; p < label.Length; p++)
-            {
-                if (label[p] != i) continue;
-                if (DistToBg[p] > maxDist) maxDist = DistToBg[p];
-                sumR += Px[p * 4 + 2];
-                sumG += Px[p * 4 + 1];
-                sumB += Px[p * 4];
-                bgR += (nearest[p] >> 16) & 0xFF;
-                bgG += (nearest[p] >> 8) & 0xFF;
-                bgB += nearest[p] & 0xFF;
-                cnt++;
-            }
-            // 块自己均色 vs "最近的背景"的均色 —— 都用均值，避免被条纹自身的明暗差异干扰
-            int meanR = (int)(sumR / cnt), meanG = (int)(sumG / cnt), meanB = (int)(sumB / cnt);
-            int nbR = (int)(bgR / cnt), nbG = (int)(bgG / cnt), nbB = (int)(bgB / cnt);
-            int d1 = Math.Abs(meanR - nbR), d2 = Math.Abs(meanG - nbG), d3 = Math.Abs(meanB - nbB);
-            int cdiff = d1;
-            if (d2 > cdiff) cdiff = d2;
-            if (d3 > cdiff) cdiff = d3;
-
-            bool isGap = (maxDist <= HoleMaxDist) && (cdiff <= HoleColorTol);
-            if (isGap)
-            {
-                for (int p = 0; p < label.Length; p++)
-                {
-                    if (label[p] == i) fg[p] = false;
-                }
-                removed++;
-                removedPx += area[i];
-                if (area[i] >= 100)
-                {
-                    diag.AppendLine("  抹掉缝  : " + area[i] + " px bbox=(" + box[i][0] + "," + box[i][1] + ")-(" +
-                                    box[i][2] + "," + box[i][3] + ") 最远距背景=" + maxDist +
-                                    " 均色=(" + meanR + "," + meanG + "," + meanB + ") 色差=" + cdiff);
-                }
-            }
-            else
-            {
-                keptRegions++;
-                if (area[i] >= 100)
-                {
-                    diag.AppendLine("  保留块: " + area[i] + " px bbox=(" + box[i][0] + "," + box[i][1] + ")-(" +
-                                    box[i][2] + "," + box[i][3] + ") 最远距背景=" + maxDist +
-                                    " 均色=(" + meanR + "," + meanG + "," + meanB + ")" +
-                                    " 近背景均色=(" + nbR + "," + nbG + "," + nbB + ") 色差=" + cdiff);
-                }
-            }
-        }
-        diag.AppendLine("封闭的缝   : 抹掉 " + removed + " 块(" + removedPx + " px)，保留 " + keptRegions +
-                        " 块（判据：最远距背景 ≤ " + HoleMaxDist + "px 且 均色差 ≤ " + HoleColorTol + "）");
-        return fg;
     }
 
     // ================= 修正文件 =================
