@@ -1,0 +1,20 @@
+{
+  "_说明": "素材清单。这份清单由 SheetGen.exe 自动生成，和 pet.png 一定对得上。\n           要换形象请改素材本身（见 README 的『换成你自己的形象』），不要手改这里的尺寸。",
+  "_尺寸": "frameWidth/frameHeight 是 sheet 里**每个格子的像素尺寸**；\n           sheetScale 是素材像素密度 —— 屏幕上显示的大小 = frameWidth/sheetScale。",
+
+  "sheet": "pet.png",
+  "frameWidth": 288,
+  "frameHeight": 384,
+  "sheetScale": 2,
+
+  "animations": {
+    "idle": { "row": 0, "frames": 4, "fps": 6, "loop": true  },
+    "think": { "row": 1, "frames": 4, "fps": 6, "loop": true  },
+    "work": { "row": 2, "frames": 6, "fps": 12, "loop": true  },
+    "alert": { "row": 3, "frames": 6, "fps": 10, "loop": true  },
+    "done": { "row": 4, "frames": 8, "fps": 12, "loop": false },
+    "awake": { "row": 5, "frames": 6, "fps": 10, "loop": false },
+    "sleep": { "row": 6, "frames": 4, "fps": 3, "loop": true  },
+    "error": { "row": 7, "frames": 6, "fps": 8, "loop": false }
+  }
+}

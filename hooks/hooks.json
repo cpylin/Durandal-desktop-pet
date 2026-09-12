@@ -1,0 +1,43 @@
+{
+  "_说明": [
+    "这是会写入 ~/.claude/settings.json 的 hooks 片段，放在这里作为参考和备份。",
+    "推荐用 install-hooks.ps1 安装，它会先备份并检查冲突；",
+    "如果你想把桌宠做成可装卸的插件，也可以把这份内容放进插件的 hooks/hooks.json。",
+    "",
+    "命令一律用 exec 形式（command = exe 路径 + args = 状态），不要把状态拼进 command。",
+    "拼成一整串的话，命令会交给 shell 解析；Git Bash 里未加引号的反斜杠是转义符，",
+    "D:\\ClaudePet\\bin\\PetNotify.exe 会被吃成 D:ClaudePetbinPetNotify.exe，全部 hook 静默失效。",
+    "exec 形式不经过 shell，路径里有反斜杠、空格都不要紧，也不用加引号。",
+    "",
+    "timeout 设 5 秒是保险值——实际单次约 60~130ms。",
+    "SessionEnd 的默认超时只有 1.5 秒，这里显式放宽到 5 秒。"
+  ],
+
+  "hooks": {
+    "SessionStart": [
+      { "matcher": "*", "hooks": [ { "type": "command", "command": "D:\\ClaudePet\\bin\\PetNotify.exe", "args": ["awake"], "timeout": 5 } ] }
+    ],
+    "UserPromptSubmit": [
+      { "hooks": [ { "type": "command", "command": "D:\\ClaudePet\\bin\\PetNotify.exe", "args": ["think"], "timeout": 5 } ] }
+    ],
+    "PreToolUse": [
+      { "matcher": "*", "hooks": [ { "type": "command", "command": "D:\\ClaudePet\\bin\\PetNotify.exe", "args": ["work"], "timeout": 5 } ] }
+    ],
+    "PostToolUse": [
+      { "matcher": "*", "hooks": [ { "type": "command", "command": "D:\\ClaudePet\\bin\\PetNotify.exe", "args": ["think"], "timeout": 5 } ] }
+    ],
+    "PostToolUseFailure": [
+      { "matcher": "*", "hooks": [ { "type": "command", "command": "D:\\ClaudePet\\bin\\PetNotify.exe", "args": ["error"], "timeout": 5 } ] }
+    ],
+    "Notification": [
+      { "matcher": "permission_prompt", "hooks": [ { "type": "command", "command": "D:\\ClaudePet\\bin\\PetNotify.exe", "args": ["alert"], "timeout": 5 } ] },
+      { "matcher": "idle_prompt",       "hooks": [ { "type": "command", "command": "D:\\ClaudePet\\bin\\PetNotify.exe", "args": ["sleep"], "timeout": 5 } ] }
+    ],
+    "Stop": [
+      { "hooks": [ { "type": "command", "command": "D:\\ClaudePet\\bin\\PetNotify.exe", "args": ["done"], "timeout": 5 } ] }
+    ],
+    "SessionEnd": [
+      { "hooks": [ { "type": "command", "command": "D:\\ClaudePet\\bin\\PetNotify.exe", "args": ["sleep"], "timeout": 5 } ] }
+    ]
+  }
+}

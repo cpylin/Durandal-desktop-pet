@@ -1,0 +1,12 @@
+# 换行符。这个文件只有一条规则，但它防的是一个**真会翻车**的问题。
+#
+# 本机全局 core.autocrlf = true，含义是"检出时 LF→CRLF"。而 build.sh 是给
+# Git Bash 跑的 —— 一旦被换成 CRLF，bash 会报：
+#     ./build.sh: /bin/bash^M: bad interpreter
+# 或者 $'\r': command not found，编译脚本直接废掉。
+# 这个问题不会在提交时出现，而是在**某次 clone / git checkout / git reset --hard
+# 之后突然出现**，那时候你早忘了有这回事。
+#
+# 只护 .sh 就够了：.cs / .ps1 / .md 用 CRLF 也能正常工作，
+# 给它们也加规则只会平白让 git 多干活。
+*.sh text eol=lf

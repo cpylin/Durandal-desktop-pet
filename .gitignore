@@ -1,0 +1,35 @@
+# 忽略规则。每条都写了"为什么"，因为这个项目里"哪些文件能删"本身就是个知识点。
+
+# ---- 编译产物：build.sh 生成，随时能重建 ----
+bin/
+*.exe
+
+# ---- 运行时状态：每台机器都不一样（位置、大小、透明度、开关）----
+# 缺了也不会出错：LoadConfig 读不到就用默认值，SaveConfig 会自己写一份出来。
+config.json
+
+# ---- 抠好的姿势图（约 31MB）----
+# Cutout.exe 的**输出**，同时也是 SheetGen.exe 的输入。
+# 能由 youlandaierQban/ 重新生成，所以不进仓库。
+assets/cut/
+
+# ---- 原始素材图（约 29MB）----
+# Cutout.exe 的**输入**，是整条素材流水线的源头。
+# 不进仓库（太大），但**千万别删** —— 删了就没法重新抠图了。建议自己另备一份。
+youlandaierQban/
+
+# ---- 抠图过程留下的诊断产物 ----
+# Cutout.exe 每跑一次都会在输出旁边多写 4 个文件：
+#   .check.png（洋红底检查图）、.mask.png（抠漏标记）、
+#   .alpha.png（灰度 alpha）、.txt（连通块诊断）
+# 纯给人看的，删掉不影响任何东西，下次跑 Cutout 会重新生成。
+# （它们生成在 assets/cut/ 里，已被上面那条覆盖；这里再写一遍是为了
+#   万一将来输出路径改到别处，也不会突然往仓库里塞 60MB。）
+*.check.png
+*.mask.png
+*.alpha.png
+
+# ---- Windows 资源管理器/编辑器的垃圾 ----
+Thumbs.db
+desktop.ini
+*.swp
