@@ -87,7 +87,18 @@ $root = [System.Windows.Automation.AutomationElement]::RootElement
 # 8 个状态、有时一个都读不到，那种"有时通过"的测试比没有更糟。
 $subCond = New-Object System.Windows.Automation.PropertyCondition(
     [System.Windows.Automation.AutomationElement]::NameProperty, '测试各状态')
-$sub = $root.FindFirst([System.Windows.Automation.TreeScope]::Descendants, $subCond)
+
+# **必须重试**：固定等 700ms 是不够的 —— 机器忙的时候菜单 popup 还没建出来，
+# FindFirst 返回空，后面的状态项就全都读不到，脚本报一个看不懂的 FAIL。
+# 这个偶发（实测 7 次里出现 1 次）不要用"再等久一点"糊过去，那是把竞态换成慢。
+# 轮询到它出现为止（上限约 3 秒），出现了再往下走。
+$sub = $null
+for ($t = 0; $t -lt 10; $t++) {
+    $sub = $root.FindFirst([System.Windows.Automation.TreeScope]::Descendants, $subCond)
+    if ($sub) { break }
+    Start-Sleep -Milliseconds 300
+}
+
 if ($sub) {
     try {
         $ec = $sub.GetCurrentPattern([System.Windows.Automation.ExpandCollapsePattern]::Pattern)
@@ -97,7 +108,7 @@ if ($sub) {
         Write-Output ('WARN: 展开「测试各状态」失败: ' + $_.Exception.Message)
     }
 } else {
-    Write-Output 'WARN: 没找到「测试各状态」这一项'
+    Write-Output 'WARN: 等了约 3 秒也没等到「测试各状态」这一项 —— 菜单可能根本没打开'
 }
 
 $cond = New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ProcessIdProperty, $pet.Id)
