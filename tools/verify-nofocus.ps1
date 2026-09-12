@@ -10,8 +10,8 @@
 # 用法（桌宠要正在运行、且当前可见）：
 #   powershell -ExecutionPolicy Bypass -File D:\ClaudePet\tools\verify-nofocus.ps1
 #
-# 副作用：会把鼠标移到桌宠身上点一下（桌宠会因此换一个状态，这是它的正常交互），
-#         测完把光标放回原处。
+# 副作用：会把鼠标移到桌宠身上点一下（左键单击 = 她冒一句话，状态不变；
+#         2026-09-12 之前这一下是"切状态"），测完把光标放回原处。
 
 $ErrorActionPreference = 'Stop'
 

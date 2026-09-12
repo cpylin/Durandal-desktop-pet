@@ -4,8 +4,9 @@
 # "里面的项对、顺序对"是两回事。改动 BuildMenu() 之后，光看代码没用 ——
 # WPF 菜单项是运行时才建出来的。
 #
-# 做法：真鼠标注入右键（不能用 PostMessage，WPF 不认合成窗口消息，见 README 坑 18），
+# 做法：真鼠标注入**右键双击**（不能用 PostMessage，WPF 不认合成窗口消息，见 README 坑 18），
 # 再用 UI Automation 读那个 popup 里的文字。
+# ⚠️ 是**双击**：2026-09-12 起右键单击改成了「切状态」，菜单改到双击上（见 README 坑 25）。
 #
 # 用法（桌宠要在跑）：
 #   powershell -ExecutionPolicy Bypass -File D:\ClaudePet\tools\verify-menu.ps1
@@ -71,10 +72,18 @@ $cy = [int](($r.T + $r.B) / 2)
 $orig = New-Object M+POINT
 [void][M]::GetCursorPos([ref]$orig)
 
-# 真鼠标右键：移动 + 按下 + 抬起
+# 真鼠标右键：移动 + 按下 + 抬起。
+# ⚠️ 2026-09-12 起菜单改成了**右键双击**弹出（右键单击变成了切状态），所以这里必须点两下，
+# 而且两下之间的间隔要**小于 Pet.cs 里的 RightDblClickMs（350ms）** —— 超了的话第二下
+# 会被当成新的一次单击，菜单永远不出来，脚本只会报一个看不懂的 FAIL。
+# 再注意：**别把这段改成"单击 + 等 700ms"**，那正好会触发出一次切状态。
 [void][M]::SetCursorPos($cx, $cy)
 Start-Sleep -Milliseconds 150
-[M]::mouse_event(0x0008, 0, 0, 0, [IntPtr]::Zero)   # RIGHTDOWN
+[M]::mouse_event(0x0008, 0, 0, 0, [IntPtr]::Zero)   # RIGHTDOWN（第一下）
+Start-Sleep -Milliseconds 60
+[M]::mouse_event(0x0010, 0, 0, 0, [IntPtr]::Zero)   # RIGHTUP
+Start-Sleep -Milliseconds 80                        # ← 必须 < 350ms
+[M]::mouse_event(0x0008, 0, 0, 0, [IntPtr]::Zero)   # RIGHTDOWN（第二下 = 双击）
 Start-Sleep -Milliseconds 60
 [M]::mouse_event(0x0010, 0, 0, 0, [IntPtr]::Zero)   # RIGHTUP
 Start-Sleep -Milliseconds 700
@@ -135,11 +144,13 @@ foreach ($n in $names) { [void]$sb.AppendLine('  ' + $n) }
 
 # 期望的 8 个状态（顺序 = CycleOrder）
 $want = @('idle (待机)','think (思考)','work (工作)','alert (等你确认)','done (完成)','awake (回来了)','sleep (睡觉)','error (出错)')
+# 「测试各状态」子菜单里**不该**有 hidden（点了就把宠物藏了，太容易误触），
+# 所以上面这个列表里没有它。hidden 只从顶层的「隐藏到托盘」进。
 $missing = @()
 foreach ($w in $want) { if (-not $names.Contains($w)) { $missing += $w } }
 [void]$sb.AppendLine('')
 [void]$sb.AppendLine('缺失的状态项：' + $(if ($missing.Count) { $missing -join ', ' } else { '（无）' }))
-[void]$sb.AppendLine('顶层菜单项齐不齐：' + [bool](($names -contains '大小') -and ($names -contains '透明度') -and ($names -contains '回到右下角') -and ($names -contains '重新载入素材') -and ($names -contains '测试各状态') -and ($names -contains '开机自启') -and ($names -contains '全屏游戏时自动隐藏') -and ($names -contains '退出')))
+[void]$sb.AppendLine('顶层菜单项齐不齐：' + [bool](($names -contains '大小') -and ($names -contains '透明度') -and ($names -contains '回到右下角') -and ($names -contains '重新载入素材') -and ($names -contains '测试各状态') -and ($names -contains '开机自启') -and ($names -contains '全屏游戏时自动隐藏') -and ($names -contains '隐藏到托盘') -and ($names -contains '退出')))
 [void]$sb.AppendLine('RESULT: ' + $(if ($missing.Count -eq 0) { 'PASS' } else { 'FAIL' }))
 
 [System.IO.File]::WriteAllText($env:TEMP + '\petmenu.txt', $sb.ToString(), (New-Object System.Text.UTF8Encoding($false)))

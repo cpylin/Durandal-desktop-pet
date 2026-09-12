@@ -47,7 +47,7 @@ class Pet
     // 以及启动失败的提示卡片。以前这个 30 是散在 8 行里的字面量，改一处就会不一致。
     const int CornerMargin = 30;    // 离屏幕右下角留的余量（逻辑像素）
     const int MinVisibleEdge = 40;  // 拖到屏幕外时至少留这么多像素露在外面（见 ClampToScreen）
-    // 判定"这一下是单击还是拖动"：按下到松开的窗口位移小于它就算单击（→ CycleState 换姿势）。
+    // 判定"这一下是单击还是拖动"：按下到松开的窗口位移小于它就算单击（→ SayLine 说句话）。
     // 量的是**曼哈顿距离** |dx|+|dy|，不是欧氏距离。调大 = 手抖也被当单击。
     const int ClickSlop = 4;
 
@@ -74,6 +74,7 @@ class Pet
     Image img;
     Border labelBox;
     TextBlock labelText;
+    ScaleTransform labelPop;         // 气泡弹出的缩放（见 ShowLabel）；平时是恒等变换
 
     Dictionary<string, Anim> anims = new Dictionary<string, Anim>();
     string state = "idle";
@@ -90,6 +91,13 @@ class Pet
     bool fullscreenAutoHide = true;
     bool petHidden = false;   // 当前是否被**本功能**藏起来了（用来区分"本来就该显示"）
     int fullscreenStreak = 0; // 连续同向采样计数，防抖用
+
+    // 用户主动「隐藏到托盘」的状态。**必须和 petHidden 分开**：两者语义不同，
+    // 共用一个字段的话，你手动藏起来之后切出全屏，全屏那套"恢复"逻辑会把宠物弹回来。
+    // 不写进 config.json —— 下次启动一律可见（藏起来的宠物重启后还是不出现，
+    // 用户会以为"双击没反应"，这是这个项目最忌讳的失败方式）。
+    bool hiddenByUser = false;
+    System.Windows.Forms.NotifyIcon trayIcon;   // 懒创建：第一次隐藏时才建
 
     // 画布尺寸：LoadSprites 从 manifest 读出来存这里（以前读完就丢，所以只能是正方形）
     int frameW = BaseFrame;
@@ -193,7 +201,14 @@ class Pet
 
         fullscreenTimer.Start();   // 全屏检测（窗口已经显示出来了，才能 Hide/Show）
 
+        // 退出前必须收掉托盘图标，否则进程没了图标还留在托盘里（要鼠标划过去才消失）。
+        // 两条退出路径都要盖住：app.Exit 管 Application.Current.Shutdown()（菜单里的「退出」），
+        // win.Closed 管直接关窗口那条。DisposeTray 是幂等的，重复调用无害。
+        app.Exit += delegate(object s, ExitEventArgs e) { DisposeTray(); };
+        win.Closed += delegate(object s, EventArgs e) { DisposeTray(); };
+
         app.Run();
+        DisposeTray();      // 兜底
         SaveConfig();
     }
 
@@ -306,6 +321,11 @@ class Pet
         labelBox.VerticalAlignment = VerticalAlignment.Top;
         Grid.SetRow(labelBox, 1);
         labelBox.Margin = new Thickness(0, 3, 0, 0);
+        // 气泡"弹出"动画的载体：从下方中心放大着冒出来（原点是底部中心 = 角色头顶位置）。
+        // 平时它是恒等变换；只有左键说话时才跑一次（见 ShowLabel 的 animate 参数）。
+        labelPop = new ScaleTransform(1, 1);
+        labelBox.RenderTransform = labelPop;
+        labelBox.RenderTransformOrigin = new Point(0.5, 1.0);
         grid.Children.Add(labelBox);
 
         win.Content = grid;
@@ -347,6 +367,15 @@ class Pet
         fullscreenTimer = new DispatcherTimer();
         fullscreenTimer.Interval = TimeSpan.FromMilliseconds(500);
         fullscreenTimer.Tick += delegate(object s2, EventArgs e2) { CheckFullscreen(); };
+
+        // 右键单/双击的判定定时器，见 OnRightClick。
+        rightClickTimer = new DispatcherTimer();
+        rightClickTimer.Interval = TimeSpan.FromMilliseconds(RightDblClickMs);
+        rightClickTimer.Tick += delegate(object s3, EventArgs e3)
+        {
+            rightClickTimer.Stop();     // 到点了还没有第二下 → 判定为单击
+            CycleState();
+        };
     }
 
     void ApplyScale(double s)
@@ -395,7 +424,13 @@ class Pet
         // 所以这里除了叫回来，还顺手把功能关掉：否则下一轮采样又把它藏回去，
         // 用户会觉得"双击没用"。关掉是确定的，气泡会说明，想开再右键勾回来。
         string extra = "";
-        if (petHidden)
+        if (hiddenByUser)
+        {
+            // 手动藏到托盘之后，双击 exe 和托盘图标一样是够得着的出口
+            ShowFromTray();
+            extra = "（已从托盘回来）";
+        }
+        else if (petHidden)
         {
             ShowPetAfterFullscreen();
             if (fullscreenAutoHide)
@@ -558,6 +593,10 @@ class Pet
     // ================= 动画 =================
     void SetState(string s)
     {
+        // 「隐藏」不是一个姿势 —— 它没有素材。所以在这里就分流掉，
+        // 免得掉进下面"清单里没有就退回 idle"的兜底里（那样点了隐藏反而变成待机）。
+        if (s == "hidden") { HideToTray(); return; }
+
         if (s == null || s.Length == 0) s = "idle";
         if (!anims.ContainsKey(s)) s = "idle";
         // 连 idle 都没有（素材加载失败留下的空壳）就什么都别做 ——
@@ -577,14 +616,16 @@ class Pet
         state = s;
         frameIndex = 0;
         lastEventTick = NowMs();
+        UpdateTrayText();   // 托盘提示跟着状态走（没建托盘图标时是空操作）
 
         Anim a = anims[state];
         animTimer.Stop();
         animTimer.Interval = TimeSpan.FromMilliseconds(Math.Max(30, 1000.0 / Math.Max(0.5, a.Fps)));
-        // 被「全屏自动隐藏」藏着的时候不要开动画：看不见的东西没必要画，
-        // 而你打游戏时恰恰最在意这点 CPU。（重新显示时由 ShowPetAfterFullscreen() 开起来。）
+        // 被藏起来的时候（不管是全屏自动隐藏还是用户手动藏到托盘）不要开动画：
+        // 看不见的东西没必要画 —— 打游戏时恰恰最在意这点 CPU。
+        // （重新显示时分别由 ShowPetAfterFullscreen() / ShowFromTray() 开起来。）
         // 注意状态本身照常更新 —— 只是不画，回来时姿势是对的。
-        if (!petHidden) animTimer.Start();
+        if (!petHidden && !hiddenByUser) animTimer.Start();
 
         img.Source = a.Bitmaps[0];
 
@@ -764,13 +805,54 @@ class Pet
         return "正在用 " + t;
     }
 
-    void ShowLabel(string text)
+    void ShowLabel(string text) { ShowLabel(text, false); }
+
+    // 显示气泡。animate=true 时播一次"弹出"动画（左键说话用）。
+    //
+    // **"适应快速点击"靠的是 BeginAnimation 的替换语义**：每次进来先 BeginAnimation(prop, null)
+    // 把上一条动画清掉、再重放，于是连点只是不停从头播 —— 不会堆积、不会排队、不需要自己维护队列。
+    // （先试过写个动画队列，多余，而且更容易出错。）
+    //
+    // animate=false 时必须把变换**显式复位**：`--shot` 那条离屏渲染路径走的就是它，
+    // 要是残留着上一次的缩放值，截出来的气泡会是缩着的、半透明的 —— 验证就白做了。
+    void ShowLabel(string text, bool animate)
     {
         if (text == null || text.Length == 0) return;
         labelText.Text = text;
         labelBox.BeginAnimation(UIElement.OpacityProperty, null);
-        labelBox.Opacity = 1.0;
         labelHideAt = NowMs() + 2600;
+
+        if (animate && labelPop != null)
+        {
+            labelPop.BeginAnimation(ScaleTransform.ScaleXProperty, null);
+            labelPop.BeginAnimation(ScaleTransform.ScaleYProperty, null);
+            labelBox.Opacity = 0.0;
+            labelPop.ScaleX = 0.72;
+            labelPop.ScaleY = 0.72;
+            TimeSpan d = TimeSpan.FromMilliseconds(170);
+            labelBox.BeginAnimation(UIElement.OpacityProperty, new DoubleAnimation(0.0, 1.0, d));
+            // 稍微过冲一点再回落，比线性放大更像"冒出来"而不是"变出来"
+            BackEase ease = new BackEase();
+            ease.Amplitude = 0.35;
+            ease.EasingMode = EasingMode.EaseOut;
+            DoubleAnimation sx = new DoubleAnimation(0.72, 1.0, d);
+            sx.EasingFunction = ease;
+            DoubleAnimation sy = new DoubleAnimation(0.72, 1.0, d);
+            sy.EasingFunction = ease;
+            labelPop.BeginAnimation(ScaleTransform.ScaleXProperty, sx);
+            labelPop.BeginAnimation(ScaleTransform.ScaleYProperty, sy);
+        }
+        else
+        {
+            labelBox.Opacity = 1.0;
+            if (labelPop != null)
+            {
+                labelPop.BeginAnimation(ScaleTransform.ScaleXProperty, null);
+                labelPop.BeginAnimation(ScaleTransform.ScaleYProperty, null);
+                labelPop.ScaleX = 1.0;
+                labelPop.ScaleY = 1.0;
+            }
+        }
     }
 
     // ================= 交互 =================
@@ -804,7 +886,7 @@ class Pet
             double moved = Math.Abs(win.Left - beforeL) + Math.Abs(win.Top - beforeT);
             if (moved < ClickSlop)
             {
-                CycleState();
+                SayLine();          // 左键单击 = 说话（状态不变；切状态挪到右键了）
             }
             else
             {
@@ -849,6 +931,43 @@ class Pet
         string next = order[(cur + 1) % order.Count];
         SetState(next);
         ShowLabel(StateLabel(next));
+    }
+
+    // ================= 左键说话 =================
+    // 单击宠物 → 她说一句话，**状态不变**（切状态挪到右键了）。
+    // 台词按状态分组、轮流取，连点有变化，像在听她碎碎念。
+    //
+    // 台词从官方语音和剧情里挑，再按每个状态的情绪重写。她的性格是
+    // **谦逊的强者 / 努力家 / 极度认真自律 / 耿直老实 / 骑士品德 / 怪力 / 猫奴 / 傲娇**：
+    // 「你看起来很懈怠，不要因为周末就放松了自己」是官方舰桥语音，「非常、非常了不起」
+    // 和「还不到我放弃的时候」都是剧情原话。
+    //
+    // ⚠️ **长度是硬约束**：气泡是单行 + CharacterEllipsis，缩到 0.6 倍时只放得下约 18 个字。
+    // 加台词请控制在 **16 字以内**，否则小尺寸下会被截成省略号。
+    static readonly Dictionary<string, string[]> StateLines = new Dictionary<string, string[]>
+    {
+        { "idle",  new string[] { "站直了。", "待机也是修行。", "别因为周末就松懈。", "要不要做几组挥枪练习？" } },
+        { "think", new string[] { "让我想想。", "一条一条来。", "结果才是这个世界的语言。", "取舍，总是要做的。" } },
+        { "work",  new string[] { "开始行动。", "体力活交给我。", "专心的时候别催我。", "认真起来就没那么快。" } },
+        { "alert", new string[] { "这里需要你点个头。", "我不过是在贯彻我的正义。", "在等你，快一点。", "决定权在你。" } },
+        { "done",  new string[] { "非常、非常了不起。", "完成了。下一个。", "收工。", "这就是所谓的成长吧。" } },
+        { "awake", new string[] { "回来了，开始吧。", "别来无恙？", "是幽兰黛尔，也是卡斯兰娜。", "站在巨人的肩上。" } },
+        { "sleep", new string[] { "……zzz……", "就一会儿……别吵……", "（抱紧了枕头）", "消灭崩坏之后再想生活。" } },
+        { "error", new string[] { "还不到我放弃的时候。", "这次我来盯。", "是我的责任。", "重新来过。" } },
+    };
+
+    // 每个状态各自记一个游标 —— 用**同一个**游标会让"切到别的状态再切回来"也跳号，
+    // 那样就没有"这个状态固定那几句轮着来"的感觉了。
+    Dictionary<string, int> lineCursor = new Dictionary<string, int>();
+
+    void SayLine()
+    {
+        string[] lines;
+        if (!StateLines.TryGetValue(state, out lines) || lines.Length == 0) return;
+        int i;
+        if (!lineCursor.TryGetValue(state, out i)) i = 0;
+        ShowLabel(lines[i], true);
+        lineCursor[state] = (i + 1) % lines.Length;
     }
 
     // ================= 点它不抢焦点 =================
@@ -1155,6 +1274,10 @@ class Pet
     // 非提权进程注册的前台事件钩子收不到它的通知，而 GetForegroundWindow 轮询不受影响。
     void CheckFullscreen()
     {
+        // 用户手动藏到托盘了就别管了。这是这两套隐藏逻辑**唯一的交叉点** ——
+        // 少了这一句，切出全屏时 ShowPetAfterFullscreen() 会把用户刚藏好的宠物弹回来。
+        if (hiddenByUser) return;
+
         if (!fullscreenAutoHide)
         {
             // 用户可能在"已经被藏起来"的时候把开关关掉，这里兜一手
@@ -1208,6 +1331,150 @@ class Pet
             if (anims.TryGetValue(state, out a) && a.Loop) animTimer.Start();
         }
         catch (Exception) { }
+    }
+
+    // ================= 隐藏状态：藏到系统托盘待命 =================
+    // 这是**用户主动**的隐藏，和上面的「全屏游戏自动隐藏」是两回事（所以是两个字段）。
+    //
+    // 语义（用户确认的"真待命"）：**隐藏期间窗口绝不自己弹出来**。
+    // hook 事件照常更新内部状态（所以回来时姿势是对的、托盘提示也是最新的），
+    // 但窗口不现形 —— "隐藏"得是可靠的，否则刚藏好又被一个事件弹回来，等于没藏。
+    void HideToTray()
+    {
+        if (hiddenByUser) return;
+        hiddenByUser = true;
+        try
+        {
+            // 和全屏隐藏同款：先收菜单，否则它的 popup 不跟着宿主窗口隐藏，
+            // 直接藏主窗口会留下一个孤儿菜单（接收层也还铺着）。
+            if (openMenu != null && openMenu.IsOpen) openMenu.IsOpen = false;
+
+            win.Hide();
+            animTimer.Stop();       // 看不见就别画；tickTimer 照常跑，状态继续更新
+            ShowTrayIcon();
+        }
+        catch (Exception) { }
+    }
+
+    void ShowFromTray()
+    {
+        if (!hiddenByUser) return;
+        hiddenByUser = false;
+        try
+        {
+            HideTrayIcon();
+            win.Show();
+            // 每次 Show() 都会重新应用窗口样式，把 WS_EX_NOACTIVATE 冲掉 ——
+            // 不补这一下，从托盘回来之后点桌宠就会抢走你编辑器的焦点。（和全屏那套同一个坑）
+            DontStealFocusOnClick(win);
+
+            // Hide 时停了动画，这里按当前状态重新开起来。
+            // 不能靠 SetState(state)：它遇到"同一个循环状态"会早退，起不到重启作用。
+            Anim a;
+            if (anims.TryGetValue(state, out a) && a.Loop) animTimer.Start();
+
+            SayLine();      // 回来说一句（状态没变，就是冒个泡）
+        }
+        catch (Exception) { }
+    }
+
+    // ---- 托盘图标 ----
+    // **不新增 .ico 文件**：从素材里现场生成 —— 取 idle 那张图的上半部分（头部）缩到 32x32。
+    // 用 System.Drawing 是因为 NotifyIcon 要的就是那种 Icon。
+    // csc.rsp **默认已经引用了** System.Windows.Forms 和 System.Drawing（见 build.sh 的注释），
+    // 所以**别再显式 /r: 一次**，会报 CS1703 重复程序集。
+    // 这里所有 System.Drawing / .Windows.Forms 的类型都**写全名**，不加 using：
+    // 那两个命名空间和 System.Windows.Media 撞了一堆名字（Color/Brush/Point/Size/Application…）。
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    static extern bool DestroyIcon(IntPtr hIcon);
+
+    void ShowTrayIcon()
+    {
+        if (trayIcon == null)
+        {
+            trayIcon = new System.Windows.Forms.NotifyIcon();
+            trayIcon.Icon = MakeTrayIcon();
+            trayIcon.Text = "ClaudePet";
+            trayIcon.Visible = false;
+            trayIcon.DoubleClick += delegate(object s, EventArgs e) { ShowFromTray(); };
+            trayIcon.ContextMenuStrip = MakeTrayMenu();
+        }
+        UpdateTrayText();
+        trayIcon.Visible = true;    // Visible 默认 false，不设它图标压根不显示
+    }
+
+    void HideTrayIcon()
+    {
+        if (trayIcon != null) trayIcon.Visible = false;
+    }
+
+    // 退出前必须收掉，否则托盘里会留一个**幽灵图标**（进程没了，图标还在，
+    // 要鼠标划过去才消失）。这是 NotifyIcon 有名的坑。
+    void DisposeTray()
+    {
+        if (trayIcon == null) return;
+        try { trayIcon.Visible = false; trayIcon.Dispose(); }
+        catch (Exception) { }
+        trayIcon = null;
+    }
+
+    // 托盘提示文字实时反映当前状态 —— "待命"期间鼠标一悬停就知道 Claude 在干嘛。
+    // ⚠️ NotifyIcon.Text 在 .NET Framework 下**上限 63 字符**，超了抛 ArgumentException。
+    void UpdateTrayText()
+    {
+        if (trayIcon == null) return;
+        string t = "ClaudePet · " + StateLabel(state);
+        if (t.Length > 63) t = t.Substring(0, 63);
+        try { trayIcon.Text = t; }
+        catch (Exception) { }
+    }
+
+    System.Drawing.Icon MakeTrayIcon()
+    {
+        try
+        {
+            string src = Path.Combine(rootDir, "assets", "cut", "akimbo.png");
+            if (!File.Exists(src)) return System.Drawing.SystemIcons.Application;
+            using (System.Drawing.Image im = System.Drawing.Image.FromFile(src))
+            {
+                // 只取"头"那一块。把整个人缩进 32x32 会糊成一团，什么都看不出来。
+                int side = (int)Math.Min(im.Width * 0.62, im.Height * 0.36);
+                int sx = (im.Width - side) / 2;
+                int sy = (int)(im.Height * 0.03);
+                using (System.Drawing.Bitmap bm = new System.Drawing.Bitmap(32, 32))
+                {
+                    using (System.Drawing.Graphics g = System.Drawing.Graphics.FromImage(bm))
+                    {
+                        g.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.HighQualityBicubic;
+                        g.DrawImage(im, new System.Drawing.Rectangle(0, 0, 32, 32),
+                                        new System.Drawing.Rectangle(sx, sy, side, side),
+                                        System.Drawing.GraphicsUnit.Pixel);
+                    }
+                    IntPtr h = bm.GetHicon();
+                    try { return (System.Drawing.Icon)System.Drawing.Icon.FromHandle(h).Clone(); }
+                    finally { DestroyIcon(h); }   // 不销毁会漏 GDI 句柄
+                }
+            }
+        }
+        catch (Exception)
+        {
+            // 取素材失败也必须有个图标 —— 没图标的话托盘里什么都不显示，用户会以为"隐藏功能坏了"
+            return System.Drawing.SystemIcons.Application;
+        }
+    }
+
+    System.Windows.Forms.ContextMenuStrip MakeTrayMenu()
+    {
+        System.Windows.Forms.ContextMenuStrip m = new System.Windows.Forms.ContextMenuStrip();
+        // 藏起来之后右键是点不到宠物的，托盘菜单是**唯一**的出口，所以「退出」必须在这儿有一份
+        System.Windows.Forms.ToolStripMenuItem show = new System.Windows.Forms.ToolStripMenuItem("显示桌宠");
+        show.Click += delegate(object s, EventArgs e) { ShowFromTray(); };
+        System.Windows.Forms.ToolStripMenuItem quit = new System.Windows.Forms.ToolStripMenuItem("退出");
+        quit.Click += delegate(object s, EventArgs e) { QuitApp(); };
+        m.Items.Add(show);
+        m.Items.Add(new System.Windows.Forms.ToolStripSeparator());
+        m.Items.Add(quit);
+        return m;
     }
 
     // ================= 开机自启 =================
@@ -1276,8 +1543,43 @@ class Pet
             case "awake": return "回来了";
             case "sleep": return "睡着了";
             case "error": return "出错了";
+            case "hidden": return "已隐藏";   // 托盘提示用得到；它没有素材，不在 CycleOrder 里
         }
         return s;
+    }
+
+    // ================= 右键：单击切状态 / 双击弹菜单 =================
+    // 2026-09-12 改的语义：**单击 = 切状态**（原来在左键），**双击 = 弹菜单**（原来在单击）。
+    // 左键腾出来给"说话"（见 SayLine）—— 左键是最高频的按键，值得留给不改变状态的动作。
+    //
+    // 代价绕不开：系统必须先等一个"双击间隔"才能确定这是单击、而不是双击的前半截。
+    // 所以右键切状态有 RightDblClickMs 的迟滞（用户确认接受）。
+    // 判定就是"等第二下"：第一下起表，表到点 = 单击；表没到点又来了第二下 = 双击。
+    // ⚠️ 这个定时器**必须独立于 tickTimer**(500ms)，它俩节奏不一样，共用会互相拖。
+    const int RightDblClickMs = 350;
+    DispatcherTimer rightClickTimer;
+
+    void OnRightClick(object sender, MouseButtonEventArgs e)
+    {
+        e.Handled = true;
+
+        // 菜单开着的时候再按右键 = 收起来。保持原有行为，也不参与单/双击判定 ——
+        // 否则"关菜单"之后的半秒里再点一下会变成一个莫名其妙的切状态。
+        if (openMenu != null && openMenu.IsOpen)
+        {
+            rightClickTimer.Stop();
+            openMenu.IsOpen = false;
+            return;
+        }
+
+        if (rightClickTimer.IsEnabled)
+        {
+            rightClickTimer.Stop();     // 第二下来了 → 双击 → 弹菜单
+            OpenPetMenu();
+            return;
+        }
+
+        rightClickTimer.Start();        // 第一下：先等一下，看有没有第二下
     }
 
     // ================= 右键菜单 =================
@@ -1287,10 +1589,8 @@ class Pet
     // 拆开纯粹是因为它原来是 159 行、8 个菜单项的委托全挤在里面，改某一项得先找它在哪。
     // 注意：下面的拆分是**纯搬位置** —— 逻辑、顺序、连"菜单已经开着时先建再丢掉"这个
     // 看起来浪费但无害的原有行为，都原样保留。
-    void OnRightClick(object sender, MouseButtonEventArgs e)
+    void OpenPetMenu()
     {
-        e.Handled = true;
-
         ContextMenu menu = BuildMenu();
         menu.PlacementTarget = win;
         menu.Placement = System.Windows.Controls.Primitives.PlacementMode.MousePoint;
@@ -1335,8 +1635,21 @@ class Pet
         menu.Items.Add(MkAutostartItem());
         menu.Items.Add(MkFullscreenItem());
         menu.Items.Add(new Separator());
+        menu.Items.Add(MkHideItem());
         menu.Items.Add(MkQuitItem());
         return menu;
+    }
+
+    // 「隐藏到托盘」。
+    // 注意它**不放进 CycleOrder**、也不进「测试各状态」子菜单 —— 右键单击是切状态，
+    // 要是 hidden 在循环里，连点几下就把宠物藏没了，找回来还得靠托盘。
+    // 隐藏只能从这一项进，这是个"明确的动作"。
+    MenuItem MkHideItem()
+    {
+        MenuItem m = new MenuItem();
+        m.Header = "隐藏到托盘";
+        m.Click += delegate(object s2, RoutedEventArgs e2) { HideToTray(); };
+        return m;
     }
 
     MenuItem MkScaleMenu()
@@ -1478,12 +1791,17 @@ class Pet
     {
         MenuItem mQuit = new MenuItem();
         mQuit.Header = "退出";
-        mQuit.Click += delegate(object s2, RoutedEventArgs e2)
-        {
-            SaveConfig();
-            Application.Current.Shutdown();
-        };
+        mQuit.Click += delegate(object s2, RoutedEventArgs e2) { QuitApp(); };
         return mQuit;
+    }
+
+    // 退出。托盘菜单的「退出」也走这里 —— 藏起来之后右键点不到宠物，
+    // 那条路径是用户唯一的出口，两边必须是同一套收尾。
+    void QuitApp()
+    {
+        SaveConfig();
+        DisposeTray();      // 不收掉会在托盘里留一个幽灵图标
+        Application.Current.Shutdown();
     }
 
 
