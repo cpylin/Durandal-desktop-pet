@@ -26,6 +26,13 @@ if [ ! -f "$CSC" ]; then
   exit 1
 fi
 
+# 输出目录**必须显式创建**：git 不跟踪空目录，所以刚 clone 下来时 bin\ 并不存在，
+# 而 csc 不会替你建它 —— 报的是
+#   error CS1567: 生成 Win32 资源时出错: 系统找不到指定的路径
+# 这个报错完全看不出是"目录不存在"，很容易怀疑成编译器坏了。
+# 本机因为 bin\ 早就在所以一直没暴露；实测 fresh clone 一定失败。
+mkdir -p bin
+
 # 程序集引用（路径里不含空格，可以安全用正斜杠）
 WPF=(
   "-r:$GAC/GAC_MSIL/PresentationFramework/v4.0_4.0.0.0__31bf3856ad364e35/PresentationFramework.dll"
