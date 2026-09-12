@@ -10,3 +10,17 @@
 # 只护 .sh 就够了：.cs / .ps1 / .md 用 CRLF 也能正常工作，
 # 给它们也加规则只会平白让 git 多干活。
 *.sh text eol=lf
+
+# 2026-09-13 从零 clone 验收时加的一条：**pet.json 也要 eol=lf**。
+#
+# 起因是一个"验收噪音"：clone 出来跑一遍 SheetGen，`git status` 就报
+# `M assets/pet.json` —— 而内容其实**一字未变**（和 `git show HEAD:` 比 md5 完全相同，
+# 而且 `git add` 一下就恢复干净）。
+# 根因是 autocrlf 的两头对不上：检出时 git 把 pet.json 写成 CRLF，
+# 而 SheetGen 写的是 LF，于是 git 认为工作区"不是它该有的样子"。
+#
+# 为什么要修而不是忍：这个项目的**收尾验收流程本身就是**
+# 「clone → 编译 → 重新生成 → 和原项目比字节」，而这一步正好会撞上它 ——
+# 报出一个看起来像"SheetGen 不确定"的假警报，把人往"工具不可复现"这个错方向带。
+# **验收流程里的假警报比不报还糟**，所以把工作区的行尾钉死成生成器实际写的那个。
+*.json text eol=lf
