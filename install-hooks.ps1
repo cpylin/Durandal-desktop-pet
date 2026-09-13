@@ -10,10 +10,15 @@
 param(
     [switch]$Uninstall,
     [switch]$DryRun,
-    [string]$PetExe = 'D:\ClaudePet\bin\PetNotify.exe'
+    [string]$PetExe = ''
 )
 
 $ErrorActionPreference = 'Stop'
+
+# PetNotify.exe 的路径默认取"本脚本所在目录\bin\"，因此 clone 到任意盘符、
+# 任意目录都能直接运行，不需要手工传参，也不依赖作者机器上的 D:\ClaudePet。
+# 需要指向别处时仍可用 -PetExe 覆盖。
+if (-not $PetExe) { $PetExe = Join-Path $PSScriptRoot 'bin\PetNotify.exe' }
 
 $settingsPath = Join-Path $env:USERPROFILE '.claude\settings.json'
 

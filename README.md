@@ -168,6 +168,10 @@ powershell -ExecutionPolicy Bypass -File D:\ClaudePet\install-hooks.ps1
 
 该命令会先备份 `~\.claude\settings.json`，随后写入 8 个 hook 事件。**重启 Claude Code 后生效**。
 
+脚本会自行推导 `PetNotify.exe` 的路径（取**脚本所在目录**下的 `bin\`），
+因此克隆到任意盘符、任意目录都能直接运行，不依赖上文示例中的 `D:\ClaudePet`。
+需要指向别处时，用 `-PetExe <路径>` 覆盖。
+
 卸载：
 
 ```powershell
@@ -871,8 +875,9 @@ powershell -ExecutionPolicy Bypass -File D:/ClaudePet/tools/verify-nofocus.ps1
   因此该素材**无法取得商业授权**，如需商业化请先替换为自行创作的原创形象。
 - **版权归属与同人规则要点**：见 **[NOTICE.md](NOTICE.md)**
 
-本项目**免费、开源、非营利**，不销售任何商品、不承接定制、不投放广告，
-属于官方指引中「非营利同人交流」的范畴。
+本项目**免费、开源、非营利**，不销售任何商品、不承接定制、不投放广告。
+需要说明的是，这一非商业承诺是**作者自行设定的限制**：米哈游官方指引将 AI 制图列为不予授权，
+本项目因此**不声称**其素材落入受官方许可的同人范畴。
 作者**不是律师**，以上内容不构成法律意见；若计划商业化，请咨询有资质的律师。
 
 代码按「现状」提供，不附带任何担保。作者不对他人使用本项目产生的任何后果负责。
