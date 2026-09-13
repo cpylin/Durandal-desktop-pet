@@ -85,7 +85,7 @@ D:\ClaudePet\
 ├── NOTES.md             实现笔记（设计取舍 + 知识点；想了解"为什么这么做"看这个）
 ├── LICENSE              代码与文档的许可证（MIT，不覆盖角色素材）
 ├── ASSET-USAGE.md       素材使用说明：哪些能用、哪些不能（非商业署名使用）
-├── NOTICE.md            版权归属声明：角色形象归米哈游，含官方同人规则链接
+├── NOTICE.md            版权归属声明：角色形象归米哈游，含同人规则要点
 ├── 启动桌宠.cmd         双击即启动（用 %~dp0 相对路径，clone 到哪都能用）
 ├── bin\                 编译产物（6 个 exe，合计约 97 KB，不进 git）
 ├── hooks\hooks.json     会写入 settings.json 的 hook 配置（参考用）
@@ -887,7 +887,7 @@ powershell -ExecutionPolicy Bypass -File D:/ClaudePet/tools/verify-nofocus.ps1
   本项目不对其主张任何权利，**AI 生成部分的版权归属存在争议**。
   尤其注意：米哈游官方同人指引**明确将 AI 制图列为不予授权**的范畴，
   所以这份素材**拿不到商业授权**，要商业化请先换成你自己的原创形象。
-- **版权归属与官方规则链接** —— 见 **[NOTICE.md](NOTICE.md)**
+- **版权归属与同人规则要点** —— 见 **[NOTICE.md](NOTICE.md)**
 
 本项目**免费、开源、非营利**，不销售任何商品、不接定制、不接广告，
 属于官方指引中"非营利同人交流"的范畴。
