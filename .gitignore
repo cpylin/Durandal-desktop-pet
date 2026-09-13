@@ -29,6 +29,12 @@ youlandaierQban/
 *.mask.png
 *.alpha.png
 
+# ---- Windows 快捷方式 ----
+# .lnk 是二进制文件，里面存的是**绝对路径**，换台机器或 clone 到别的目录必然失效。
+# 所以仓库里只放可移植的 `启动桌宠.cmd`（它用 %~dp0 相对定位），
+# 桌面快捷方式自己在本地建一个指向那个 .cmd 即可。
+*.lnk
+
 # ---- Windows 资源管理器/编辑器的垃圾 ----
 Thumbs.db
 desktop.ini
