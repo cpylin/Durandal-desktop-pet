@@ -146,6 +146,24 @@ class Pet
             return;
         }
 
+        // 工具模式：把角色头部导出成 .ico，给桌面快捷方式当图标。
+        //   Pet.exe --icon <输出路径>
+        //
+        // 和 --shot 一样放在单实例保护**之前** —— 所以桌宠正在跑的时候也能生成图标，
+        // 不需要先把正在跑的那只关掉。
+        if (argv.Length >= 1 && argv[0] == "--icon")
+        {
+            try
+            {
+                IconMode(argv.Length >= 2 ? argv[1] : "pet.ico");
+            }
+            catch (Exception ex)
+            {
+                ShowNotice("生成图标失败：\n\n" + ex.Message);
+            }
+            return;
+        }
+
         // 单实例保护：重复启动不会开出第二只，而是给已经在跑的那只发一次"召唤"，
         // 让它冒个泡 + 如果跑到屏幕外就自己挪回来。
         //
@@ -262,6 +280,160 @@ class Pet
                         "   不透明度=" + labelBox.Opacity);
         diag.AppendLine("气泡文字   : " + labelText.Text);
         File.WriteAllText(outPath + ".txt", diag.ToString(), new UTF8Encoding(false));
+    }
+
+    // 工具模式：把角色头部导出成一个多尺寸 .ico，给桌面快捷方式当图标。
+    //   Pet.exe --icon <输出路径>
+    //
+    // 头部位置**复用托盘图标那套 FindHeadBox()**（上半图里扫虹膜定位眼睛，再以眼中心取正方形），
+    // 所以换素材之后重新跑一次就行，不用手工调坐标 —— 和"托盘图标不新增 .ico"是同一个思路，
+    // 只不过快捷方式的图标**必须**是一个真文件，不能再现场生成。
+    //
+    // 为什么自己拼 ICO 而不是 GetHicon()：GetHicon 只给 32x32 一档，
+    // 而桌面图标、任务栏、大图标视图各用不同尺寸，一档拉伸出来会糊。
+    // 这里**每个尺寸都从原图重新采样**，不是把小图放大，小尺寸才干净。
+    //
+    // 注：本项目其它地方写"winexe 没有控制台"，指的是**双击**的情况；
+    // 从 Git Bash 里跑 stdout 是通的（实测），所以这里可以直接 Console.WriteLine。
+    static void IconMode(string outPath)
+    {
+        string root = FindRoot();
+        string src = Path.Combine(root, "assets", "cut", "akimbo.png");
+        if (!File.Exists(src))
+        {
+            ShowNotice("找不到素材：\n\n" + src +
+                       "\n\nassets\\cut\\ 不进仓库，请先在 Git Bash 里跑一次素材流水线（Cutout.exe）。");
+            return;
+        }
+
+        // 16/24/32/48 是列表、任务栏、桌面小图标在用的档位，128/256 给大图标视图。
+        int[] sizes = new int[] { 16, 24, 32, 48, 64, 128, 256 };
+        byte[][] blobs = new byte[sizes.Length][];
+        int sx, sy, side;
+        int srcW, srcH;
+
+        using (System.Drawing.Bitmap bm = (System.Drawing.Bitmap)System.Drawing.Image.FromFile(src))
+        {
+            srcW = bm.Width; srcH = bm.Height;
+            FindHeadBox(bm, out sx, out sy, out side);
+
+            // 往外放一点边距，免得头发正好顶到图标边缘；放完再夹回图内。
+            int pad = (int)Math.Round(side * 0.06);
+            sx -= pad; sy -= pad; side += pad * 2;
+            if (sx < 0) sx = 0;
+            if (sy < 0) sy = 0;
+            if (sx + side > bm.Width) side = bm.Width - sx;
+            if (sy + side > bm.Height) side = bm.Height - sy;
+
+            for (int i = 0; i < sizes.Length; i++)
+            {
+                using (System.Drawing.Bitmap one = new System.Drawing.Bitmap(sizes[i], sizes[i]))
+                {
+                    using (System.Drawing.Graphics g = System.Drawing.Graphics.FromImage(one))
+                    {
+                        g.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.HighQualityBicubic;
+                        g.PixelOffsetMode = System.Drawing.Drawing2D.PixelOffsetMode.HighQuality;
+                        g.DrawImage(bm,
+                            new System.Drawing.Rectangle(0, 0, sizes[i], sizes[i]),
+                            new System.Drawing.Rectangle(sx, sy, side, side),
+                            System.Drawing.GraphicsUnit.Pixel);
+                    }
+                    blobs[i] = sizes[i] >= 64 ? EncodePng(one) : EncodeDib(one);
+                }
+            }
+        }
+
+        Common.EnsureDir(outPath);
+        WriteIco(outPath, sizes, blobs);
+
+        Console.WriteLine("已生成 " + outPath);
+        Console.WriteLine("  来源素材: " + src + "  (" + srcW + "x" + srcH + ")");
+        Console.WriteLine("  头部方块: (" + sx + "," + sy + ") 边长 " + side +
+                          "   [含 6% 留白；由 FindHeadBox 扫虹膜量出]");
+        for (int i = 0; i < sizes.Length; i++)
+            Console.WriteLine("  " + sizes[i] + "x" + sizes[i] + "  " + blobs[i].Length + " 字节" +
+                              (sizes[i] >= 64 ? "  (PNG)" : "  (DIB)"));
+    }
+
+    // 一个尺寸编码成 PNG（Vista 起的 ICO 允许直接放 PNG 数据）。
+    static byte[] EncodePng(System.Drawing.Bitmap bm)
+    {
+        using (MemoryStream ms = new MemoryStream())
+        {
+            bm.Save(ms, System.Drawing.Imaging.ImageFormat.Png);
+            return ms.ToArray();
+        }
+    }
+
+    // 一个尺寸编码成老式 DIB：BITMAPINFOHEADER + 自下而上的 BGRA + AND 掩码。
+    // 小尺寸用它是因为兼容性最好；16/24 这种档位本来就极小，PNG 压不出什么好处。
+    static byte[] EncodeDib(System.Drawing.Bitmap bm)
+    {
+        int w = bm.Width, h = bm.Height;
+        int pixStride = w * 4;
+        int maskStride = ((w + 31) / 32) * 4;
+        byte[] buf = new byte[40 + pixStride * h + maskStride * h];
+
+        using (MemoryStream ms = new MemoryStream(buf))
+        using (BinaryWriter bw = new BinaryWriter(ms))
+        {
+            bw.Write(40);                    // biSize
+            bw.Write(w);                     // biWidth
+            bw.Write(h * 2);                 // biHeight：ICO 里是"颜色 + 掩码"两张，所以写两倍
+            bw.Write((short)1);              // biPlanes
+            bw.Write((short)32);             // biBitCount
+            bw.Write(0);                     // biCompression = BI_RGB
+            bw.Write(pixStride * h);         // biSizeImage
+            bw.Write(0); bw.Write(0); bw.Write(0); bw.Write(0);   // 分辨率 + 调色板数量
+
+            for (int y = h - 1; y >= 0; y--)                 // DIB 是自下而上存的
+                for (int x = 0; x < w; x++)
+                {
+                    System.Drawing.Color c = bm.GetPixel(x, y);
+                    bw.Write(c.B); bw.Write(c.G); bw.Write(c.R); bw.Write(c.A);
+                }
+
+            // AND 掩码：1 = 全透明。现代 Windows 看的是 alpha 通道，
+            // 这一层只是给极老的渲染路径兜底，所以按"完全透明才置位"写就够了。
+            byte[] row = new byte[maskStride];
+            for (int y = h - 1; y >= 0; y--)
+            {
+                Array.Clear(row, 0, maskStride);
+                for (int x = 0; x < w; x++)
+                    if (bm.GetPixel(x, y).A == 0) row[x >> 3] |= (byte)(0x80 >> (x & 7));
+                bw.Write(row);
+            }
+        }
+        return buf;
+    }
+
+    // 拼 ICO 容器：头 + 每个尺寸一条目录项 + 各自的图像数据。
+    static void WriteIco(string path, int[] sizes, byte[][] blobs)
+    {
+        using (FileStream fs = File.Create(path))
+        using (BinaryWriter bw = new BinaryWriter(fs))
+        {
+            bw.Write((short)0);              // idReserved，必须是 0
+            bw.Write((short)1);              // idType = 1（图标，不是光标）
+            bw.Write((short)sizes.Length);
+
+            int offset = 6 + 16 * sizes.Length;
+            for (int i = 0; i < sizes.Length; i++)
+            {
+                // 目录项里 256 要写成 0（一个字节放不下 256）
+                bw.Write((byte)(sizes[i] >= 256 ? 0 : sizes[i]));
+                bw.Write((byte)(sizes[i] >= 256 ? 0 : sizes[i]));
+                bw.Write((byte)0);           // 调色板颜色数：真彩色写 0
+                bw.Write((byte)0);           // 保留
+                bw.Write((short)1);          // 色平面
+                bw.Write((short)32);         // 位深
+                bw.Write(blobs[i].Length);
+                bw.Write(offset);
+                offset += blobs[i].Length;
+            }
+
+            for (int i = 0; i < sizes.Length; i++) bw.Write(blobs[i]);
+        }
     }
 
     // exe 在 bin/ 下，素材在上一级的 assets/；两种布局都兼容
