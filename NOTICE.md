@@ -116,7 +116,7 @@ scancode --license --copyright --info --json-pp scan.json .
 [LICENSE](LICENSE) 里的 MIT 许可证仅覆盖本仓库的**代码与文档**，即：
 
 ```
-*.cs  *.sh  *.ps1  *.cmd  *.json  *.md   （含 README.md / NOTES.md）
+*.cs  *.sh  *.ps1  *.cmd  *.json  *.md   （含 README.md）
 ```
 
 **不覆盖**任何角色形象内容，包括但不限于：
